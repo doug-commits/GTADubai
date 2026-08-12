@@ -87,6 +87,7 @@ async function main() {
       get renderStats() {
         return game.renderStats;
       },
+      debugScene: () => game.debugScene(),
     },
     __mukbangReady: true,
   });

@@ -48,4 +48,6 @@ console.log(
   'telemetry',
   JSON.stringify(await page.evaluate(() => window.__mukbang.telemetry)),
 );
+const scene = await page.evaluate(() => window.__mukbang.debugScene?.() ?? null);
+if (scene) console.log('scene', JSON.stringify(scene, null, 2));
 await browser.close();

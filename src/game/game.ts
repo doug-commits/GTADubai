@@ -429,6 +429,57 @@ export class Game {
     };
   }
 
+  /**
+   * Scene diagnostics for the probe harness. Raycasts through the frame and
+   * reports what each sample actually hits, which is the only reliable way to
+   * tell "the surface is dark" apart from "the surface is not there".
+   */
+  debugScene() {
+    const ray = new THREE.Raycaster();
+    const named = new Map<THREE.Object3D, string>();
+    named.set(this.road.mesh, 'road');
+    named.set(this.barriers.mesh, 'barriers');
+    named.set(this.city.mesh, 'city');
+    named.set(this.sky.mesh, 'sky');
+
+    const nameOf = (o: THREE.Object3D | null): string => {
+      let cur: THREE.Object3D | null = o;
+      while (cur) {
+        const n = named.get(cur);
+        if (n) return n;
+        cur = cur.parent;
+      }
+      return o ? o.type + (o.name ? `#${o.name}` : '') : 'nothing';
+    };
+
+    // Sample down the vertical centre line of the screen, top to bottom.
+    const samples = [0.0, 0.2, 0.4, 0.55, 0.7, 0.8, 0.9, 0.98].map((y) => {
+      ray.setFromCamera(new THREE.Vector2(0, 1 - y * 2), this.camera);
+      const hits = ray.intersectObjects(this.scene.children, true);
+      const first = hits.find((h) => h.object !== this.sky.mesh) ?? hits[0];
+      return {
+        screenY: y,
+        hit: first ? nameOf(first.object) : 'nothing',
+        distance: first ? Math.round(first.distance * 10) / 10 : null,
+      };
+    });
+
+    return {
+      samples,
+      roadInScene: this.scene.children.includes(this.road.mesh),
+      roadVisible: this.road.mesh.visible,
+      roadDebugUniform: (this.road.mesh.material as THREE.RawShaderMaterial).uniforms.uDebug?.value,
+      camera: {
+        x: Math.round(this.camera.position.x * 10) / 10,
+        y: Math.round(this.camera.position.y * 100) / 100,
+        z: Math.round(this.camera.position.z * 10) / 10,
+        fov: Math.round(this.camera.fov * 10) / 10,
+      },
+      carS: Math.round(this.car.s),
+      roadLength: Math.round(this.corridor.length),
+    };
+  }
+
   /** Test hook: end the run immediately. Used by the critic harness. */
   forceFinish(won: boolean) {
     if (this.phase !== 'running' && this.phase !== 'countdown') return;
