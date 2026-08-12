@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { buildMetro } from './metro';
 import { buildPalm, buildLightMast, buildGantry, makePanelTexture } from './signage';
+import { makeGlowMaterial } from '../game/vehicle-shader';
 import { SKY_GLSL, SUN_DIR } from '../render/sky';
 import { PBR_GLSL, SKY_IBL_GLSL } from '../render/pbr';
 import type { Corridor } from './corridor';
@@ -386,6 +387,35 @@ export class MetroLine {
       }
     }
     chunked(this.group, mast.structure, mat, place);
+
+    // The masts had no lamp. Sodium heads are most of what a lit motorway looks
+    // like at dusk — without them the poles read as bare sticks and the road
+    // gets no pools of warm light.
+    const lampMat = makeGlowMaterial(new THREE.Color(1.0, 0.62, 0.24), 2.4, 2.8);
+    const lampGeo = new THREE.PlaneGeometry(1, 1);
+    const lampPlace = place.map((pl) => {
+      const pos = new THREE.Vector3();
+      const rot = new THREE.Quaternion();
+      const scl = new THREE.Vector3();
+      pl.m.decompose(pos, rot, scl);
+      const arm = mast.lampPosition.clone().applyQuaternion(rot);
+      const mm = new THREE.Matrix4().compose(
+        pos.clone().add(arm),
+        new THREE.Quaternion(),
+        new THREE.Vector3(5.5, 5.5, 5.5),
+      );
+      return { s: pl.s, m: mm };
+    });
+    for (const g of chunked(this.group, lampGeo, lampMat, lampPlace)) {
+      g.renderOrder = 9;
+      g.geometry.setAttribute(
+        'aTint',
+        new THREE.InstancedBufferAttribute(
+          new Float32Array(Array.from({ length: g.count * 4 }, () => 1)),
+          4,
+        ),
+      );
+    }
   }
 
   /** Bilingual overhead direction signs — the strongest UAE cue at eye level. */
@@ -427,10 +457,29 @@ export class MetroLine {
 
     // One panel mesh per distinct destination so the canvas textures are built
     // once and reused across every gantry showing that destination.
+    // The panel's face normal is -Z, and an instance rotated to the path
+    // heading has its local -Z pointing DOWN the road — so the sign was facing
+    // away from the driver approaching it. Turn the panels to face oncoming
+    // traffic. This is why the gantries read as blank black rectangles: we were
+    // looking at the aluminium back of every sign.
+    const flip = new THREE.Quaternion().setFromAxisAngle(up, Math.PI);
     SIGNS.forEach((spec, si) => {
       const tex = makePanelTexture({ ...spec, colour: 'green' });
-      const panelMat = new THREE.MeshBasicMaterial({ map: tex, toneMapped: false });
-      const mine = gantryPlace.filter((_, i) => i % SIGNS.length === si);
+      const panelMat = new THREE.MeshBasicMaterial({
+        map: tex,
+        toneMapped: false,
+        side: THREE.DoubleSide,
+      });
+      const mine = gantryPlace
+        .filter((_, i) => i % SIGNS.length === si)
+        .map((g2) => {
+          const pos = new THREE.Vector3();
+          const rot = new THREE.Quaternion();
+          const scl = new THREE.Vector3();
+          g2.m.decompose(pos, rot, scl);
+          rot.multiply(flip);
+          return { s: g2.s, m: new THREE.Matrix4().compose(pos, rot, scl) };
+        });
       chunked(this.group, g.panel, panelMat, mine, 640);
     });
   }

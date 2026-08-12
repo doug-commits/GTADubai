@@ -21,11 +21,22 @@ import type { PathSample } from '../world/path';
  * each frame is the mutated `Telemetry` object.
  */
 
-/** The run is the last stretch into town — Business Bay through Downtown to DWTC. */
-const RACE_LENGTH = 5200;
-const START_TIME = 35;
-const CHECKPOINT_BONUS = 12;
-const CHECKPOINT_COUNT = 4;
+/**
+ * The run is the last stretch into town — Al Safa through Downtown to DWTC.
+ *
+ * Length is set by SIGHTLINES, not by pacing. The Burj Khalifa sits about 4 km
+ * short of the finish and roughly 520 m off the carriageway. A portrait phone
+ * has only ~41 degrees of horizontal FOV, so at 1.3 km the Burj is 20.8 degrees
+ * off-axis and falls just outside the frame — measured at ndcX 1.14, i.e. it
+ * missed the screen edge by about a third of a degree while standing 404 px
+ * tall. Starting the run further out puts it near the vanishing point and lets
+ * it grow through the whole approach, which is what driving this road actually
+ * looks like.
+ */
+const RACE_LENGTH = 7000;
+const START_TIME = 38;
+const CHECKPOINT_BONUS = 13;
+const CHECKPOINT_COUNT = 6;
 
 const SIM_STEP = 1 / 120;
 const MAX_FRAME = 0.1;
@@ -488,6 +499,31 @@ export class Game {
       },
       carS: Math.round(this.car.s),
       roadLength: Math.round(this.corridor.length),
+      landmarkVisibility: (() => {
+        // Project each landmark's top into screen space: the only reliable way
+        // to answer "is the Burj actually on screen and how big is it".
+        const frustum = new THREE.Frustum().setFromProjectionMatrix(
+          new THREE.Matrix4().multiplyMatrices(
+            this.camera.projectionMatrix,
+            this.camera.matrixWorldInverse,
+          ),
+        );
+        return this.corridor.landmarks.map((l) => {
+          const base = new THREE.Vector3(l.x, 0, l.z);
+          const top = new THREE.Vector3(l.x, l.height, l.z);
+          const pb = base.clone().project(this.camera);
+          const pt = top.clone().project(this.camera);
+          const px = Math.abs(pt.y - pb.y) * 0.5 * window.innerHeight;
+          return {
+            name: l.name,
+            dist: Math.round(base.distanceTo(this.camera.position)),
+            inFrustum: frustum.containsPoint(top) || frustum.containsPoint(base),
+            screenPx: Math.round(px),
+            ndcX: Math.round(pt.x * 100) / 100,
+            behind: pt.z > 1,
+          };
+        });
+      })(),
       landmarks: this.corridor.landmarks.map((l, i) => {
         const mesh = this.landmarks.group.children[i] as THREE.Mesh | undefined;
         mesh?.geometry?.computeBoundingSphere?.();
