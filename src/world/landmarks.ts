@@ -406,8 +406,11 @@ function buildBurjKhalifa(): LandmarkMesh {
   const SETBACKS = 27;
   const NOSE_SEGS = 4; // facets across each wing's rounded end
 
-  const coreAt = (y: number): number => 21 - 8 * (y / BODY_TOP); // hex core, mild taper
-  const wingHalfAt = (y: number): number => 13 - 5.5 * (y / BODY_TOP);
+  // Base dimensions chosen to land on the published footprint: wings reaching
+  // ~80 m from the centre give a ~139 m span across two wing tips and roughly
+  // 7.5k m2 of plate, which is the tower as built.
+  const coreAt = (y: number): number => 23 - 9 * (y / BODY_TOP); // hex core, mild taper
+  const wingHalfAt = (y: number): number => 15 - 6.5 * (y / BODY_TOP);
 
   /** One Y-plan section: three wings with rounded noses off a hexagonal core. */
   const section = (reach: number[], y: number): P2[] => {
@@ -439,14 +442,16 @@ function buildBurjKhalifa(): LandmarkMesh {
     return pts;
   };
 
-  const reach = [68, 68, 68]; // wing tip radius at grade
+  const reach = [80, 80, 80]; // wing tip radius at grade
   const rings: Ring[] = [ringAt(section(reach, 0), 0)];
 
   for (let k = 0; k < SETBACKS; k++) {
     // Setbacks crowd together toward the top, as they do on the real tower.
     const y = 78 + (BODY_TOP - 104) * Math.pow(k / (SETBACKS - 1), 0.95);
     rings.push(ringAt(section(reach, y), y));
-    reach[k % 3] *= 0.882; // ONE wing steps in — this is what makes it spiral
+    // ONE wing steps in — nine turns each, so the mass sheds in a spiral and
+    // the wings have all but merged into the core by the time the spire starts.
+    reach[k % 3] *= 0.86;
     rings.push(ringAt(section(reach, y + 0.6), y + 0.6)); // ledge + shaft above
   }
   rings.push(ringAt(section(reach, BODY_TOP), BODY_TOP));
@@ -575,18 +580,26 @@ function buildMuseumOfTheFuture(): LandmarkMesh {
 function buildEmiratesTowers(): LandmarkMesh {
   const build = (H: number, reach: number, sliceDir: number): THREE.BufferGeometry => {
     const CORNER = reach * 0.3;
-    const sec = (s: number): P2[] => roundedTriSection((reach - CORNER) * s, CORNER * s, 3, sliceDir > 0 ? 0 : Math.PI);
+    // Rotate the plate so one corner faces the way the crown is sliced: the
+    // blade then rises over a corner, which is what the real crowns do.
+    const rot = sliceDir > 0 ? 0 : Math.PI;
+    const sec = (s: number): P2[] => roundedTriSection((reach - CORNER) * s, CORNER * s, 4, rot);
+
+    const TOP_S = 0.86; // the shaft tapers slightly on the way up
+    const rTop = reach * TOP_S;
     const slope = 1.15; // steep — the crowns are dramatic, not chamfers
-    const bodyTop = H - 2 * slope * reach;
+    const yMid = H - slope * rTop; // slice plane on the tower axis
+    const bodyTop = H - 2 * slope * rTop; // where the slice starts
 
     const rings: Ring[] = [
       ringAt(sec(1), 0),
-      ringAt(sec(0.985), 60),
-      ringAt(sec(0.93), 180),
-      ringAt(sec(0.88), bodyTop), // gentle taper up the shaft
+      ringAt(sec(1), 14), ringAt(sec(0.99), 14), // podium-level setback
+      ringAt(sec(0.96), 120),
+      ringAt(sec(0.91), 220),
+      ringAt(sec(TOP_S), bodyTop),
     ];
     const body = loft(rings, {});
-    const crownRing = slicedRing(sec(0.88), bodyTop + slope * reach, slope, sliceDir, 0);
+    const crownRing = slicedRing(sec(TOP_S), yMid, slope, sliceDir, 0);
     const crown = loft([rings[rings.length - 1], crownRing], { capTop: true });
     return mergeAll([body, crown]);
   };
@@ -596,10 +609,12 @@ function buildEmiratesTowers(): LandmarkMesh {
   // Shared podium — the towers sit on one continuous base, not on bare ground.
   const podium = boxAt(190, 13, 74, 0, 0, 4);
 
+  // Beacons sit on the blade tips, which is where the aircraft warning lights
+  // go and where the eye lands on the pair at dusk.
   const em = mergeAll([
-    boxAt(3, 5, 3, -52, 352, 0),
-    boxAt(3, 5, 3, 52, 306.5, 8),
-    boxAt(178, 1.6, 2, 0, 11.6, -33),
+    place(new THREE.OctahedronGeometry(2.6), -52 + 30 * 0.86, 353, 0),
+    place(new THREE.OctahedronGeometry(2.4), 52 - 26 * 0.86, 307.5, 8),
+    boxAt(178, 1.6, 2, 0, 11.6, -33), // podium retail band
   ]);
 
   return { geometry: mergeAll([office, hotel, podium]), emissive: em, height: 354.6 };
@@ -745,18 +760,29 @@ function buildBurjAlArab(): LandmarkMesh {
  */
 function buildDifcGate(): LandmarkMesh {
   const H = 80;
+  const PLINTH = 1.6; // the arch stands on a raised plaza, not on the road
+  const A = H - PLINTH; // height of the arch itself
   const W = 92;
   const D = 34;
   const OPEN_W = 44;
   const OPEN_H = 34;
 
+  // Elevation profile: splayed feet, battered legs, a corbelled cornice near
+  // the top and clipped upper corners. Squat and heavy — the opposite of every
+  // slender tower around it, which is why it reads at all.
   const shape = new THREE.Shape();
-  shape.moveTo(-W / 2, 0);
-  shape.lineTo(W / 2, 0);
-  shape.lineTo(W / 2, H - 8);
-  shape.lineTo(W / 2 - 4, H); // clipped upper corners, as built
-  shape.lineTo(-W / 2 + 4, H);
-  shape.lineTo(-W / 2, H - 8);
+  shape.moveTo(-W / 2 - 3, 0);
+  shape.lineTo(W / 2 + 3, 0);
+  shape.lineTo(W / 2, 7);
+  shape.lineTo(W / 2, A - 13);
+  shape.lineTo(W / 2 + 2.5, A - 13);
+  shape.lineTo(W / 2 + 2.5, A - 6);
+  shape.lineTo(W / 2 - 4, A);
+  shape.lineTo(-W / 2 + 4, A);
+  shape.lineTo(-W / 2 - 2.5, A - 6);
+  shape.lineTo(-W / 2 - 2.5, A - 13);
+  shape.lineTo(-W / 2, A - 13);
+  shape.lineTo(-W / 2, 7);
   shape.closePath();
 
   const hole = new THREE.Path();
@@ -771,15 +797,15 @@ function buildDifcGate(): LandmarkMesh {
   shape.holes.push(hole);
 
   const arch = new THREE.ExtrudeGeometry(shape, { depth: D, bevelEnabled: false, curveSegments: 3, steps: 1 });
-  arch.translate(0, 0, -D / 2);
+  arch.translate(0, PLINTH, -D / 2);
 
-  // Plinth: the Gate stands on a raised podium at the head of the DIFC axis.
-  const plinth = boxAt(W + 26, 4.5, D + 30, 0, -4.5, 0);
+  // Raised plaza at the head of the DIFC axis — the arch sits on top of it.
+  const plinth = boxAt(W + 30, PLINTH, D + 34, 0, 0, 0);
 
   const em = mergeAll([
-    boxAt(OPEN_W - 2, 1.2, D * 0.9, 0, OPEN_H - 1.6, 0), // lit arch soffit
-    boxAt(W - 12, 2.2, 1.0, 0, H - 12, D / 2 + 0.3), // crown band, road side
-    boxAt(W - 12, 2.2, 1.0, 0, H - 12, -D / 2 - 0.3),
+    boxAt(OPEN_W - 2, 1.2, D * 0.9, 0, PLINTH + OPEN_H - 1.6, 0), // lit arch soffit
+    boxAt(W - 12, 2.2, 1.0, 0, H - 13, D / 2 + 0.3), // cornice band, road side
+    boxAt(W - 12, 2.2, 1.0, 0, H - 13, -D / 2 - 0.3),
   ]);
 
   return { geometry: mergeAll([arch, plinth]), emissive: em, height: H };

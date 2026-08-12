@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { SKY_GLSL, SUN_DIR } from '../render/sky';
 import { FACADE_VERT, FACADE_FRAG, facadeUniforms } from './facade';
+import { buildLandmark } from './landmarks';
+import { PBR_GLSL, SKY_IBL_GLSL } from '../render/pbr';
 import type { Corridor } from './corridor';
 import { ROAD_HALF_WIDTH } from './corridor';
 
@@ -261,8 +263,8 @@ export class City {
     const rnd = mulberry32(0xd0ba1);
     const boxes: BoxInstance[] = [];
 
-    // --- landmarks --------------------------------------------------------
-    for (const l of corridor.landmarks) landmarkBoxes(l, rnd, boxes);
+    // Landmarks are no longer part of the instanced box field — they get real
+    // silhouettes from landmarks.ts, built as their own meshes. See `Landmarks`.
 
     // --- real OSM footprints, when we have them ---------------------------
     if (corridor.buildings.length) {
@@ -506,5 +508,191 @@ export class Furniture {
     glows.frustumCulled = false;
     glows.renderOrder = 5;
     this.group.add(glows);
+  }
+}
+
+/**
+ * Named Dubai landmarks.
+ *
+ * These get real silhouettes from `landmarks.ts` rather than a place in the
+ * instanced box field — the Burj's spiralling Y-plan, the Museum of the
+ * Future's torus, Emirates Towers' chamfered crowns. They are what make the
+ * corridor read as Dubai rather than as any city with tall buildings, so they
+ * are worth the extra draw calls.
+ *
+ * Shaded through the shared PBR contract with the analytic sky as the
+ * environment, so nothing is downloaded for the lighting.
+ */
+export class Landmarks {
+  readonly group = new THREE.Group();
+  private materials: THREE.RawShaderMaterial[] = [];
+
+  constructor(corridor: Corridor) {
+    for (const l of corridor.landmarks) {
+      const built = buildLandmark(l.id, Math.abs(Math.round(l.x * 7 + l.z * 13)));
+
+      const mat = this.makeMaterial();
+      const mesh = new THREE.Mesh(built.geometry, mat);
+
+      // Landmarks are modelled at their true height; scale only if the spec
+      // and the model disagree, so the Burj stays 828 m tall.
+      const scale = built.height > 1 ? l.height / built.height : 1;
+      mesh.scale.setScalar(scale);
+      mesh.position.set(l.x, 0, l.z);
+      // Face the corridor, with a little variation so the row is not uniform.
+      const p = corridor.path.sample(l.s);
+      mesh.rotation.y = p.heading + (l.side > 0 ? Math.PI : 0);
+      mesh.frustumCulled = true;
+      this.group.add(mesh);
+
+      if (built.emissive) {
+        const em = new THREE.Mesh(built.emissive, this.makeEmissiveMaterial());
+        em.scale.copy(mesh.scale);
+        em.position.copy(mesh.position);
+        em.rotation.copy(mesh.rotation);
+        em.frustumCulled = true;
+        em.renderOrder = 8;
+        this.group.add(em);
+      }
+    }
+  }
+
+  private makeMaterial(): THREE.RawShaderMaterial {
+    const m = new THREE.RawShaderMaterial({
+      name: 'landmark',
+      glslVersion: THREE.GLSL3,
+      uniforms: {
+        uCameraPos: { value: new THREE.Vector3() },
+        uSunDir: { value: SUN_DIR.clone() },
+        uSunColor: { value: new THREE.Color(1.0, 0.44, 0.16).multiplyScalar(3.4) },
+        uTime: { value: 0 },
+        uFogNear: { value: 600 },
+        uFogFar: { value: 4200 },
+      },
+      vertexShader: /* glsl */ `
+        in vec3 position; in vec3 normal; in vec2 uv;
+        uniform mat4 modelViewMatrix, projectionMatrix, modelMatrix;
+        out vec3 vN; out vec3 vW; out vec3 vLocal; out vec2 vUv;
+        void main() {
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vW = wp.xyz;
+          vLocal = position;
+          vUv = uv;
+          vN = normalize(mat3(modelMatrix) * normal);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        precision highp float;
+        precision highp int;
+        precision highp sampler2D;
+        in vec3 vN; in vec3 vW; in vec3 vLocal; in vec2 vUv;
+        out vec4 outColor;
+        uniform vec3 uCameraPos, uSunDir, uSunColor;
+        uniform float uTime, uFogNear, uFogFar;
+        ${SKY_GLSL}
+        ${PBR_GLSL}
+        ${SKY_IBL_GLSL}
+
+        float h21(vec2 p) {
+          p = fract(p * vec2(233.34, 851.73));
+          p += dot(p, p + 23.45);
+          return fract(p.x * p.y);
+        }
+
+        void main() {
+          vec3 N = normalize(vN);
+          vec3 V = normalize(vW - uCameraPos);
+          float dist = length(vW - uCameraPos);
+
+          // Curtain wall: floor bands every 3.6 m, glazing modules across.
+          float floorH = 3.6;
+          float band = fract(vLocal.y / floorH);
+          float spandrel = smoothstep(0.0, 0.12, band) * smoothstep(1.0, 0.86, band);
+
+          // Horizontal module index taken from whichever pair of axes lies in
+          // the face, so the grid wraps curved and faceted forms alike.
+          vec2 face = abs(N.y) > 0.7 ? vLocal.xz : (abs(N.x) > 0.7 ? vLocal.zy : vLocal.xy);
+          float bay = floor(face.x / 2.9);
+          float row = floor(vLocal.y / floorH);
+          float r = h21(vec2(bay, row));
+
+          // Detail fades out with distance so a 828 m tower does not alias.
+          float detail = 1.0 - smoothstep(300.0, 1400.0, dist);
+
+          vec3 glassAlbedo = vec3(0.020, 0.024, 0.032);
+          vec3 frameAlbedo = vec3(0.055, 0.050, 0.048);
+          float glassMask = spandrel * detail;
+
+          vec3 albedo = mix(frameAlbedo, glassAlbedo, glassMask);
+          float rough = mix(0.62, 0.10, glassMask);
+          rough = filterRoughness(N, rough);
+
+          Surface s = makeSurface(albedo, 0.0, rough, N, V);
+
+          vec3 R = reflect(V, N);
+          vec3 col = shadeIBL(s, skyIrradiance(N, uSunDir), skyPrefiltered(R, s.roughness, uSunDir));
+          col += shadeDirect(s, uSunDir, uSunColor);
+
+          // Lit rooms behind the glass.
+          float lit = step(0.52, r) * glassMask;
+          vec3 warm = vec3(1.00, 0.60, 0.26);
+          vec3 cool = vec3(0.70, 0.80, 1.00);
+          vec3 interior = mix(warm, cool, step(0.86, h21(vec2(row, bay))));
+          col += interior * lit * (0.35 + 0.75 * h21(vec2(bay + 5.0, row - 3.0))) * 1.5;
+
+          float fog = smoothstep(uFogNear, uFogFar, dist);
+          col = mix(col, skyRadiance(normalize(vec3(V.x, 0.05, V.z)), uSunDir), fog * 0.95);
+          outColor = vec4(col, 1.0);
+        }
+      `,
+      side: THREE.DoubleSide,
+    });
+    this.materials.push(m);
+    return m;
+  }
+
+  private makeEmissiveMaterial(): THREE.RawShaderMaterial {
+    const m = new THREE.RawShaderMaterial({
+      name: 'landmark-emissive',
+      glslVersion: THREE.GLSL3,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: { uTime: { value: 0 }, uCameraPos: { value: new THREE.Vector3() } },
+      vertexShader: /* glsl */ `
+        in vec3 position; in vec2 uv;
+        uniform mat4 modelViewMatrix, projectionMatrix, modelMatrix;
+        out vec2 vUv; out vec3 vW;
+        void main() {
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vW = wp.xyz; vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        precision highp float;
+        precision highp sampler2D;
+        in vec2 vUv; in vec3 vW;
+        out vec4 outColor;
+        uniform float uTime;
+        uniform vec3 uCameraPos;
+        void main() {
+          // Crown and signage bands: warm gold, gently pulsing.
+          float pulse = 0.82 + 0.18 * sin(uTime * 0.8 + vW.y * 0.05);
+          vec3 c = vec3(1.0, 0.72, 0.30) * pulse * 2.2;
+          outColor = vec4(c, 0.85);
+        }
+      `,
+    });
+    this.materials.push(m);
+    return m;
+  }
+
+  update(time: number, cameraPos: THREE.Vector3) {
+    for (const m of this.materials) {
+      if (m.uniforms.uTime) m.uniforms.uTime.value = time;
+      if (m.uniforms.uCameraPos) (m.uniforms.uCameraPos.value as THREE.Vector3).copy(cameraPos);
+    }
   }
 }

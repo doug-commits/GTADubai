@@ -88,12 +88,11 @@ type Sec = readonly [
 ];
 
 /** Detail levels: how many points describe half a section. */
-const enum Detail {
-  /** Hero car — adds a lower-flank and an upper-flank point. Ring = 18. */
-  Hi = 0,
-  /** Traffic — shoulder straight to beltline. Ring = 14. */
-  Lo = 1,
-}
+type Detail = 0 | 1;
+/** Hero car — adds a lower-flank and an upper-flank point. Ring = 18. */
+const HI: Detail = 0;
+/** Traffic — shoulder runs straight to the beltline. Ring = 14. */
+const LO: Detail = 1;
 
 /**
  * Expand one section into a closed ring of 3D points, ordered
@@ -117,13 +116,13 @@ function sectionRing(s: Sec, detail: Detail): THREE.Vector3[] {
   half.push([0, yBot]); // 0 underbody centre
   half.push([wBot - bx, yBot]); // 1 underbody edge
   half.push([wBot, yBot + by]); // 2 sill  [crease rail]
-  if (detail === Detail.Hi) {
+  if (detail === HI) {
     // Lower flank: pulled 72% of the way out to the shoulder but only 55% of
     // the way up, which is what gives the flank its convex "tuck".
     half.push([wBot + (wMax - wBot) * 0.72, yBot + (ySh - yBot) * 0.55]);
   }
   half.push([wMax, ySh]); // shoulder — widest point  [crease rail]
-  if (detail === Detail.Hi) {
+  if (detail === HI) {
     half.push([wBelt + (wMax - wBelt) * 0.62, ySh + (yBelt - ySh) * 0.58]);
   }
   half.push([wBelt, yBelt]); // beltline  [crease rail]
@@ -532,7 +531,6 @@ function merge(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
     }
     iOff += ix ? ix.count : p.count;
     vOff += p.count;
-    g.dispose();
   }
   const out = new THREE.BufferGeometry();
   out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
@@ -550,4 +548,228 @@ function sizeOf(parts: THREE.BufferGeometry[]): THREE.Vector3 {
     if (g.boundingBox) bb.union(g.boundingBox);
   }
   return bb.getSize(new THREE.Vector3());
+}
+
+// ---------------------------------------------------------------------------
+// Player hero car — mid-engine fastback coupé
+// ---------------------------------------------------------------------------
+
+/**
+ * 1.90 m wide × 1.28 m tall × 4.50 m long. Wheelbase 2.66 m, so the axles sit
+ * at z = ∓1.33 and the overhangs are 0.86 m front / 0.86 m rear — short, which
+ * is what makes a car look fast standing still.
+ *
+ * The table below IS the car. Read the `z` column as a walk from the nose
+ * (−2.19) to the tail (+2.19) and the other columns as what the section is
+ * doing there. Three shaping decisions are worth calling out:
+ *
+ *  • `yBot` rises to 0.470 at z = ∓1.33 and drops back to the sill height
+ *    either side. That vaults the underbody into a WHEEL ARCH — a real curved
+ *    recess the wheel lives inside, not a flat panel with a disc stuck on it.
+ *    `wBot` simultaneously flares to ~0.94 at the crown so the arch has a LIP.
+ *
+ *  • `wMax` peaks at 0.950 over the rear axle and falls to 0.856 at the tail,
+ *    while `wTop` collapses from 0.836 at the cowl to 0.600 over the roof.
+ *    Widest at the shoulder, narrow at the sill, narrower still at the roof —
+ *    that is tumblehome, and it is what puts a rim light down the flank.
+ *
+ *  • `yTop` climbs 0.958 → 1.278 between z = −0.50 and z = +0.07: a 0.57 m run
+ *    for a 0.32 m rise, i.e. a windscreen raked ~30° off horizontal. It then
+ *    holds level to +0.80 and falls continuously to the tail. FASTBACK, not
+ *    notchback — committed to, because the chase camera lives behind the car
+ *    and an unbroken roof-to-tail line is the shape that reads from there.
+ */
+//                z,   yBot,   yTop,   wBot,   wMax,    ySh,  wBelt,  yBelt,   wTop,  topF,  botF
+const COUPE: Sec[] = [
+  [-2.190, 0.300, 0.720, 0.560, 0.700, 0.560, 0.640, 0.660, 0.520, 0.95, 0.90], //  0 nose face
+  [-2.100, 0.185, 0.800, 0.730, 0.840, 0.580, 0.790, 0.720, 0.660, 0.90, 0.75], //  1 fascia
+  [-1.980, 0.160, 0.856, 0.808, 0.906, 0.598, 0.870, 0.762, 0.752, 0.80, 0.58], //  2 lamp line
+  [-1.800, 0.155, 0.884, 0.838, 0.930, 0.606, 0.898, 0.790, 0.800, 0.66, 0.50], //  3 arch opens
+  [-1.630, 0.398, 0.900, 0.895, 0.940, 0.612, 0.908, 0.804, 0.818, 0.58, 0.44], //  4
+  [-1.480, 0.454, 0.912, 0.925, 0.946, 0.616, 0.914, 0.812, 0.828, 0.52, 0.40], //  5
+  [-1.330, 0.470, 0.920, 0.935, 0.948, 0.618, 0.916, 0.818, 0.833, 0.50, 0.38], //  6 FRONT AXLE
+  [-1.180, 0.454, 0.928, 0.925, 0.948, 0.620, 0.916, 0.824, 0.836, 0.52, 0.40], //  7
+  [-1.030, 0.398, 0.934, 0.895, 0.944, 0.620, 0.912, 0.828, 0.838, 0.58, 0.44], //  8
+  [-0.860, 0.156, 0.940, 0.812, 0.938, 0.620, 0.906, 0.832, 0.836, 0.64, 0.52], //  9 arch closes
+  [-0.620, 0.155, 0.950, 0.792, 0.932, 0.620, 0.898, 0.840, 0.826, 0.50, 0.48], // 10 cowl
+  [-0.500, 0.155, 0.958, 0.790, 0.928, 0.620, 0.892, 0.846, 0.818, 0.40, 0.48], // 11 SCREEN BASE
+  [-0.220, 0.155, 1.118, 0.790, 0.926, 0.622, 0.856, 0.906, 0.700, 0.72, 0.48], // 12 screen mid
+  [0.070, 0.155, 1.278, 0.790, 0.926, 0.624, 0.826, 0.968, 0.612, 0.88, 0.48], //  13 ROOF FRONT
+  [0.440, 0.155, 1.282, 0.792, 0.930, 0.624, 0.820, 0.972, 0.600, 0.92, 0.48], //  14 roof mid
+  [0.800, 0.156, 1.270, 0.796, 0.936, 0.624, 0.822, 0.968, 0.596, 0.92, 0.48], //  15 ROOF REAR
+  [0.920, 0.300, 1.238, 0.860, 0.940, 0.624, 0.828, 0.962, 0.606, 0.90, 0.46], //  16
+  [1.030, 0.412, 1.205, 0.902, 0.943, 0.624, 0.834, 0.956, 0.620, 0.88, 0.44], //  17
+  [1.180, 0.454, 1.150, 0.928, 0.947, 0.623, 0.848, 0.944, 0.652, 0.82, 0.42], //  18
+  [1.330, 0.470, 1.098, 0.938, 0.950, 0.622, 0.862, 0.930, 0.690, 0.74, 0.40], //  19 REAR AXLE
+  [1.480, 0.454, 1.040, 0.930, 0.950, 0.620, 0.876, 0.906, 0.734, 0.62, 0.42], //  20
+  [1.630, 0.398, 0.996, 0.898, 0.945, 0.618, 0.888, 0.880, 0.778, 0.54, 0.46], //  21
+  [1.800, 0.156, 0.966, 0.812, 0.938, 0.616, 0.892, 0.862, 0.800, 0.48, 0.52], //  22 arch closes
+  [1.950, 0.172, 0.952, 0.790, 0.930, 0.614, 0.890, 0.852, 0.806, 0.44, 0.55], //  23 decklid
+  [2.080, 0.190, 0.944, 0.782, 0.922, 0.612, 0.884, 0.848, 0.808, 0.42, 0.56], //  24 TAIL
+  [2.190, 0.268, 0.898, 0.700, 0.856, 0.596, 0.816, 0.812, 0.744, 0.55, 0.66], //  25 rear face
+];
+
+const R = RAIL_HI;
+/** Rails that carry a hard line the length of the car. */
+const COUPE_CREASE_RAILS = [
+  R.sill,
+  R.shoulder, // the shoulder line — the single most important crease on a car
+  R.belt,
+  R.rail,
+  mirrorRail(R.sill, R.count),
+  mirrorRail(R.shoulder, R.count),
+  mirrorRail(R.belt, R.count),
+  mirrorRail(R.rail, R.count),
+];
+/** Sections where a panel actually stops: screen base, roof ends, tail. */
+const COUPE_CREASE_SECTIONS = [1, 11, 13, 15, 24];
+
+/** Lamp apertures, as (section span, right-hand rail span) on the loft grid. */
+const HEAD_S0 = 1;
+const HEAD_S1 = 3;
+const TAIL_S0 = 22;
+const TAIL_S1 = 24;
+const LAMP_R0 = R.upFlank; // upper flank → beltline: where lamps live on a coupé
+const LAMP_RC = 2;
+const LAMP_R0_L = mirrorRail(LAMP_R0 + LAMP_RC, R.count);
+
+const WHEEL_R = 0.345;
+const WHEEL_HALF = 0.142;
+
+/** One wheel: 16 radial segments, dished rim face, bulged sidewall. */
+function buildWheel(): THREE.BufferGeometry {
+  // Symmetric about x=0 on purpose — a single geometry is instanced on both
+  // sides of the car, so an asymmetric dish would face inwards on one side.
+  // Profile: hub cap proud of a dished rim face, a flange that steps back out
+  // to the bead, a sidewall bulging past the flange, then the tread crown.
+  const profile: [number, number][] = [
+    [-0.088, 0.0], // hub centre, proud of the rim face
+    [-0.104, 0.108], // rim face, INSET behind the flange — reads as a real wheel
+    [-0.126, 0.244], // rim face outer
+    [-0.142, 0.292], // sidewall bulge: the widest point of the whole wheel
+    [-0.096, WHEEL_R], // tread shoulder
+    [0.096, WHEEL_R], // tread crown (smooth across — rubber has no facets here)
+    [0.142, 0.292],
+    [0.126, 0.244],
+    [0.104, 0.108],
+    [0.088, 0.0],
+  ];
+  // Hard rings at every metal/rubber transition; the bulge and crown stay smooth.
+  return merge([revolve(profile, 16, [1, 2, 4, 5, 7, 8])]);
+}
+
+export function buildPlayerCar(): CarParts {
+  const rings = COUPE.map((s) => sectionRing(s, HI));
+  const N = R.count;
+  const last = COUPE.length - 1;
+
+  const lampHole = (i: number, j: number): boolean => {
+    const inHead = i >= HEAD_S0 && i < HEAD_S1;
+    const inTail = i >= TAIL_S0 && i < TAIL_S1;
+    if (!inHead && !inTail) return false;
+    const right = j >= LAMP_R0 && j < LAMP_R0 + LAMP_RC;
+    const left = j >= LAMP_R0_L && j < LAMP_R0_L + LAMP_RC;
+    return right || left;
+  };
+
+  // --- painted shell -------------------------------------------------------
+  const shell = loft(rings, {
+    creaseSections: COUPE_CREASE_SECTIONS,
+    creaseRails: COUPE_CREASE_RAILS,
+    omit: lampHole,
+  });
+  // Front fascia: deep in the middle (the grille mouth), shallow at the bonnet
+  // edge so the leading edge stays crisp instead of collapsing into the recess.
+  const noseCap = recessCap(
+    rings[0],
+    true,
+    (j) => (j === R.roofC || j === mirrorRail(R.roofEdge, N) || j === R.roofEdge ? 0.94 : 0.62),
+    (j) => (j === R.roofC || j === mirrorRail(R.roofEdge, N) || j === R.roofEdge ? 0.02 : 0.135),
+  );
+  const tailCap = recessCap(
+    rings[last],
+    false,
+    (j) => (j >= R.belt && j <= mirrorRail(R.belt, N) ? 0.9 : 0.7),
+    (j) => (j >= R.belt && j <= mirrorRail(R.belt, N) ? 0.03 : 0.1),
+  );
+  const body = merge([shell, noseCap, tailCap]);
+
+  // --- glass ---------------------------------------------------------------
+  // Floated 10 mm proud of the shell so it never z-fights, and taken straight
+  // off the loft grid so it inherits the exact rake and curvature of the roof.
+  const glassParts = [
+    patch(rings, 11, 13, R.rail, 4, 0.01), // windscreen
+    patch(rings, 15, 20, R.rail, 4, 0.01), // rear screen, down the fastback
+    patch(rings, 11, 15, R.belt, 1, 0.008), // side glass R
+    patch(rings, 11, 15, mirrorRail(R.rail, N), 1, 0.008), // side glass L
+    patch(rings, 15, 18, R.belt, 1, 0.008), // rear quarter R
+    patch(rings, 15, 18, mirrorRail(R.rail, N), 1, 0.008), // rear quarter L
+  ];
+  const glass = merge(glassParts);
+
+  // --- lamps ---------------------------------------------------------------
+  // Sunk 38 mm INTO the wing and inheriting the wing's angle. At dusk this is
+  // what separates a headlight from a sticker: the lens normal is tilted with
+  // the bodywork, and the socket wall around it catches the emissive spill.
+  const lightsFront = merge([
+    patch(rings, HEAD_S0, HEAD_S1, LAMP_R0, LAMP_RC, -0.038),
+    patch(rings, HEAD_S0, HEAD_S1, LAMP_R0_L, LAMP_RC, -0.038),
+    box(0.30, 0.032, 0.028, 0.55, 0.585, -2.128), // DRL blade R
+    box(0.30, 0.032, 0.028, -0.55, 0.585, -2.128), // DRL blade L
+  ]);
+  const lightsRear = merge([
+    patch(rings, TAIL_S0, TAIL_S1, LAMP_R0, LAMP_RC, -0.034),
+    patch(rings, TAIL_S0, TAIL_S1, LAMP_R0_L, LAMP_RC, -0.034),
+    box(1.24, 0.040, 0.022, 0, 0.842, 2.152), // full-width tail bar
+  ]);
+
+  // --- dark plastics -------------------------------------------------------
+  const trimCore = [
+    // Underbody + arch liners in one strip: the arch interior must go dark or
+    // the recess reads as a dent in the paint instead of a hole.
+    patch(rings, 0, last, mirrorRail(R.under, N), 2, 0.005),
+    socket(rings, HEAD_S0, HEAD_S1, LAMP_R0, LAMP_RC, -0.038),
+    socket(rings, HEAD_S0, HEAD_S1, LAMP_R0_L, LAMP_RC, -0.038),
+    socket(rings, TAIL_S0, TAIL_S1, LAMP_R0, LAMP_RC, -0.034),
+    socket(rings, TAIL_S0, TAIL_S1, LAMP_R0_L, LAMP_RC, -0.034),
+    box(1.50, 0.060, 0.160, 0, 0.152, -2.170), // front splitter, stepped out
+    box(0.28, 0.120, 0.090, 0.60, 0.285, -2.140), // corner intake R
+    box(0.28, 0.120, 0.090, -0.60, 0.285, -2.140), // corner intake L
+    box(0.062, 0.075, 2.05, 0.906, 0.150, 0.10), // side skirt R
+    box(0.062, 0.075, 2.05, -0.906, 0.150, 0.10), // side skirt L
+    taperBox(1.62, 0.055, 0.13, 0, 0.972, 1.985, 0.94, 0.7), // ducktail lip
+    box(1.52, 0.100, 0.160, 0, 0.216, 2.170), // rear valance
+    revolve([[-0.05, 0.048], [0.05, 0.048]], 8).translate(0.40, 0.30, 2.20), // exhaust R
+    revolve([[-0.05, 0.048], [0.05, 0.048]], 8).translate(-0.40, 0.30, 2.20), // exhaust L
+  ];
+  // Mirrors last: they are the cheapest silhouette break on the car (~50 tris
+  // for the pair) and they are excluded from `size` because gameplay collision
+  // should use the body width, not the mirror width.
+  const mirrors = [
+    box(0.085, 0.030, 0.030, 0.945, 0.952, -0.345),
+    taperBox(0.052, 0.078, 0.165, 1.018, 0.968, -0.352, 0.8, 0.86),
+    box(0.085, 0.030, 0.030, -0.945, 0.952, -0.345),
+    taperBox(0.052, 0.078, 0.165, -1.018, 0.968, -0.352, 0.8, 0.86),
+  ];
+
+  const size = sizeOf([...trimCore, ...glassParts, body, lightsFront, lightsRear]);
+  const trim = merge([...trimCore, ...mirrors]);
+
+  return {
+    body,
+    glass,
+    trim,
+    wheel: buildWheel(),
+    lightsFront,
+    lightsRear,
+    // Rear track 20 mm wider than the front — standard, and it makes the car
+    // look planted from behind, which is the view the player has all game.
+    wheelPositions: [
+      new THREE.Vector3(0.796, WHEEL_R, -1.33),
+      new THREE.Vector3(-0.796, WHEEL_R, -1.33),
+      new THREE.Vector3(0.806, WHEEL_R, 1.33),
+      new THREE.Vector3(-0.806, WHEEL_R, 1.33),
+    ],
+    size,
+  };
 }

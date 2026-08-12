@@ -616,16 +616,17 @@ function drawArabicApprox(
   ctx: CanvasRenderingContext2D,
   text: string,
   cx: number,
-  baselineY: number,
+  centreY: number,
   size: number,
   maxW: number,
+  maxH: number,
   colour: string,
-): void {
+): number {
   const words = text
     .split(/\s+/)
     .filter((w) => w.length > 0)
     .slice(0, 6);
-  if (words.length === 0) return;
+  if (words.length === 0) return size;
 
   const rnd = mulberry32(hashString(text));
   const unit = size * 0.42; // nominal advance of one letterform
@@ -647,11 +648,24 @@ function drawArabicApprox(
 
   const rawW =
     plan.reduce((s, w) => s + w.length * unit, 0) + gap * Math.max(0, plan.length - 1);
-  const scale = Math.min(1, maxW / Math.max(1, rawW));
+  // Scale to the available width in BOTH directions — a short destination like
+  // "Abu Dhabi" should be set large and fill the line, exactly as a signwriter
+  // would set it, not sit tiny in the middle of an empty board. Bounded by the
+  // line's vertical room as well: ascenders plus the descending bowls and dots
+  // span ~1.3x the nominal size, which will happily crash into the English
+  // line below if only the width is checked.
+  const scale = clamp(
+    Math.min(maxW / Math.max(1, rawW), maxH / (size * 1.3)),
+    0.3,
+    1.25,
+  );
   const u = unit * scale;
   const g = gap * scale;
   const s = size * scale;
   const total = plan.reduce((a, w) => a + w.length * u, 0) + g * Math.max(0, plan.length - 1);
+  // Naskh sits low in its em box; this puts the optical centre on centreY so the
+  // approximation lines up with where the native path's 'middle' baseline lands.
+  const baselineY = centreY + s * 0.3;
 
   ctx.save();
   ctx.fillStyle = colour;
@@ -707,6 +721,7 @@ function drawArabicApprox(
     x = left - g;
   }
   ctx.restore();
+  return s;
 }
 
 // --- canvas utilities -------------------------------------------------------
@@ -733,7 +748,15 @@ function roundRectPath(
   ctx.closePath();
 }
 
-/** Shrink until it fits, then squeeze, then truncate. Same order a signwriter uses. */
+/**
+ * Shrink until it fits, then squeeze, then truncate. Same order a signwriter
+ * uses, and the same order that keeps a long destination legible.
+ *
+ * Text advance is very close to linear in font size, so we solve for the size
+ * directly instead of stepping down 2 px at a time: shaping a long Arabic
+ * string is not cheap, and the naive loop was costing ~40 measureText calls per
+ * line against a 2 s load budget.
+ */
 function fitText(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -742,8 +765,12 @@ function fitText(
   minPx: number,
   maxW: number,
 ): { size: number; squeeze: number; text: string } {
-  let size = startPx;
-  while (size > minPx) {
+  ctx.font = `700 ${startPx}px ${family}`;
+  const w0 = ctx.measureText(text).width;
+  if (w0 <= maxW) return { size: startPx, squeeze: 1, text };
+
+  let size = Math.max(minPx, Math.floor((startPx * maxW) / Math.max(1, w0)));
+  for (let guard = 0; guard < 6 && size > minPx; guard++) {
     ctx.font = `700 ${size}px ${family}`;
     if (ctx.measureText(text).width <= maxW) return { size, squeeze: 1, text };
     size -= 2;
@@ -758,6 +785,7 @@ function fitText(
   return { size: minPx, squeeze: 0.78, text: `${cut}…` };
 }
 
+/** Draws the legend and reports the size it settled on, so the next line can key off it. */
 function drawFitted(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -768,7 +796,7 @@ function drawFitted(
   cx: number,
   cy: number,
   colour: string,
-): void {
+): number {
   const f = fitText(ctx, text, family, startPx, minPx, maxW);
   ctx.save();
   ctx.fillStyle = colour;
@@ -779,6 +807,42 @@ function drawFitted(
   ctx.scale(f.squeeze, 1);
   ctx.fillText(f.text, 0, 0);
   ctx.restore();
+  return f.size;
+}
+
+let grainTile: HTMLCanvasElement | null = null;
+/**
+ * Retroreflective sheeting speckle, as a 64 px tile drawn once and repeated.
+ *
+ * The obvious implementation — walk getImageData over the whole 1024x512 panel
+ * — costs ~45 ms per sign in JS, which a corridor's worth of destinations turns
+ * into half the 2 s load budget on its own. A tiled pattern fill is the same
+ * look for well under a millisecond. Balanced light/dark speckle at low alpha,
+ * so it works in plain source-over and needs no blend-mode support.
+ */
+function grainPattern(ctx: CanvasRenderingContext2D): CanvasPattern | null {
+  if (!grainTile) {
+    const N = 64;
+    const c = document.createElement('canvas');
+    c.width = N;
+    c.height = N;
+    const g = c.getContext('2d');
+    if (!g) return null;
+    const img = g.createImageData(N, N);
+    const d = img.data;
+    const rnd = mulberry32(0x51a13d);
+    for (let i = 0; i < d.length; i += 4) {
+      const v = rnd();
+      const lightish = v >= 0.5 ? 255 : 0;
+      d[i] = lightish;
+      d[i + 1] = lightish;
+      d[i + 2] = lightish;
+      d[i + 3] = Math.floor(Math.abs(v - 0.5) * 2 * 255);
+    }
+    g.putImageData(img, 0, 0);
+    grainTile = c;
+  }
+  return ctx.createPattern(grainTile, 'repeat');
 }
 
 /** White chevron arrow. UAE uses an up arrow for "ahead", down for lane assignment. */
@@ -914,7 +978,7 @@ export function makePanelTexture(spec: SignSpec): THREE.CanvasTexture {
       drawFitted(ctx, arExit, AR_STACK, 46, 24, tabW - 28, tx + tabW / 2, ty + 40, WHITE);
       ctx.direction = 'ltr';
     } else {
-      drawArabicApprox(ctx, arExit, tx + tabW / 2, ty + 52, 40, tabW - 34, WHITE);
+      drawArabicApprox(ctx, arExit, tx + tabW / 2, ty + 40, 40, tabW - 34, 48, WHITE);
     }
     drawFitted(ctx, exit.toUpperCase(), EN_STACK, 44, 22, tabW - 28, tx + tabW / 2, ty + 94, WHITE);
     ctx.restore();
@@ -937,16 +1001,20 @@ export function makePanelTexture(spec: SignSpec): THREE.CanvasTexture {
   const arY = lerp(blockTop, blockBot, 0.32);
   const enY = lerp(blockTop, blockBot, 0.74);
 
-  // Arabic first and larger — that line order is one of the strongest
-  // single tells that this is a Gulf sign rather than a European one.
+  // Arabic first and larger — that line order, and the Arabic having primacy of
+  // size, is one of the strongest single tells that this is a Gulf sign rather
+  // than a European one. So Arabic is fitted first and the English line is then
+  // capped against it: a long destination shrinks BOTH lines rather than
+  // letting the Latin line quietly become the dominant one.
+  let arSize: number;
   if (arabicMode === 'native') {
     ctx.direction = 'rtl';
-    drawFitted(ctx, toArabicDigits(spec.ar), AR_STACK, 118, 40, blockW, blockCx, arY, WHITE);
+    arSize = drawFitted(ctx, toArabicDigits(spec.ar), AR_STACK, 118, 40, blockW, blockCx, arY, WHITE);
     ctx.direction = 'ltr';
   } else {
-    drawArabicApprox(ctx, spec.ar, blockCx, arY + 34, 96, blockW, WHITE);
+    arSize = drawArabicApprox(ctx, spec.ar, blockCx, arY, 96, blockW, (enY - arY) * 0.95, WHITE);
   }
-  drawFitted(ctx, spec.en, EN_STACK, 86, 30, blockW, blockCx, enY, WHITE);
+  drawFitted(ctx, spec.en, EN_STACK, Math.min(86, arSize * 0.8), 26, blockW, blockCx, enY, WHITE);
 
   // --- arrows -------------------------------------------------------------
   if (lanes >= 1) {
@@ -968,18 +1036,17 @@ export function makePanelTexture(spec: SignSpec): THREE.CanvasTexture {
   }
 
   // --- sheeting grain ------------------------------------------------------
-  // Very light, and applied last so it sits over the legend too. Costs one
-  // pass over the canvas at build time and kills the "vector graphic" flatness.
-  const img = ctx.getImageData(0, 0, W, H);
-  const d = img.data;
-  const grainRnd = mulberry32(hashString(key));
-  for (let i = 0; i < d.length; i += 4) {
-    const n = (grainRnd() - 0.5) * 11;
-    d[i] = clamp((d[i] ?? 0) + n, 0, 255);
-    d[i + 1] = clamp((d[i + 1] ?? 0) + n, 0, 255);
-    d[i + 2] = clamp((d[i + 2] ?? 0) + n, 0, 255);
+  // Applied last so it sits over the legend too. Kills the "vector graphic"
+  // flatness that otherwise makes a procedural sign read as a UI element
+  // composited into the scene rather than a painted aluminium board.
+  const pat = grainPattern(ctx);
+  if (pat) {
+    ctx.save();
+    ctx.globalAlpha = 0.075;
+    ctx.fillStyle = pat;
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
   }
-  ctx.putImageData(img, 0, 0);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.name = `sign:${spec.en}`;

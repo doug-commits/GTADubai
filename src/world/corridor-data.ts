@@ -23,6 +23,8 @@
  * ============================================================================
  */
 
+import type { LandmarkId } from './landmarks';
+
 export interface LandmarkSpec {
   name: string;
   lat: number;
@@ -33,6 +35,11 @@ export interface LandmarkSpec {
   radius: number;
   /** Silhouette archetype used by the city builder. */
   shape: 'spire' | 'tower' | 'twin' | 'slab' | 'dome' | 'sail';
+  /**
+   * Which purpose-built silhouette to use from `landmarks.ts`. Anything left
+   * as 'generic-tower' gets a seeded commercial tower rather than a portrait.
+   */
+  id: LandmarkId;
 }
 
 /**
@@ -76,24 +83,29 @@ export const SZR_CONTROL_POINTS: Array<[lat: number, lon: number]> = [
  * Positions are the buildings' own published coordinates.
  */
 export const LANDMARKS: LandmarkSpec[] = [
-  { name: 'Burj Khalifa', lat: 25.1972, lon: 55.2744, height: 828, radius: 42, shape: 'spire' },
-  { name: 'Emirates Tower One', lat: 25.2172, lon: 55.2828, height: 355, radius: 26, shape: 'twin' },
-  { name: 'Jumeirah Emirates Towers Hotel', lat: 25.2166, lon: 55.2840, height: 309, radius: 24, shape: 'twin' },
-  { name: 'Rose Rayhaan', lat: 25.2245, lon: 55.2823, height: 333, radius: 18, shape: 'tower' },
-  { name: 'Chelsea Tower', lat: 25.2216, lon: 55.2806, height: 250, radius: 16, shape: 'spire' },
-  { name: 'The Index', lat: 25.2109, lon: 55.2792, height: 328, radius: 22, shape: 'slab' },
-  { name: 'Almas Tower', lat: 25.0742, lon: 55.1400, height: 360, radius: 24, shape: 'tower' },
-  { name: 'The Gate, DIFC', lat: 25.2118, lon: 55.2812, height: 80, radius: 40, shape: 'slab' },
-  { name: 'Dubai World Trade Centre', lat: 25.2253, lon: 55.2873, height: 149, radius: 22, shape: 'slab' },
-  { name: 'Address Sky View', lat: 25.1938, lon: 55.2742, height: 260, radius: 20, shape: 'twin' },
-  { name: 'The Opus', lat: 25.1856, lon: 55.2668, height: 93, radius: 30, shape: 'slab' },
-  { name: 'Ubora Towers', lat: 25.1852, lon: 55.2718, height: 261, radius: 20, shape: 'tower' },
-  { name: 'Park Towers', lat: 25.2093, lon: 55.2786, height: 180, radius: 18, shape: 'twin' },
-  { name: 'Al Yaqoub Tower', lat: 25.2050, lon: 55.2726, height: 328, radius: 20, shape: 'spire' },
-  { name: 'Al Kazim Towers', lat: 25.1157, lon: 55.2005, height: 265, radius: 20, shape: 'twin' },
-  { name: 'Sheraton Grand', lat: 25.2205, lon: 55.2795, height: 256, radius: 18, shape: 'tower' },
-  { name: 'Burj Al Salam', lat: 25.2231, lon: 55.2841, height: 296, radius: 19, shape: 'tower' },
-  { name: 'Conrad Dubai', lat: 25.2288, lon: 55.2862, height: 233, radius: 20, shape: 'slab' },
+  { name: 'Burj Khalifa', lat: 25.1972, lon: 55.2744, height: 828, radius: 42, shape: 'spire', id: 'burj-khalifa' },
+  // Sits directly beside Sheikh Zayed Road and is one of the most recognisable
+  // objects on the whole corridor — the torus with the elliptical void.
+  { name: 'Museum of the Future', lat: 25.2195, lon: 55.2825, height: 77, radius: 33, shape: 'dome', id: 'museum-of-the-future' },
+  { name: 'Emirates Towers', lat: 25.2170, lon: 55.2833, height: 355, radius: 30, shape: 'twin', id: 'emirates-towers' },
+  { name: 'Rose Rayhaan', lat: 25.2245, lon: 55.2823, height: 333, radius: 18, shape: 'tower', id: 'rose-rayhaan' },
+  { name: 'Chelsea Tower', lat: 25.2216, lon: 55.2806, height: 250, radius: 16, shape: 'spire', id: 'generic-tower' },
+  { name: 'The Index', lat: 25.2109, lon: 55.2792, height: 328, radius: 22, shape: 'slab', id: 'generic-tower' },
+  { name: 'Almas Tower', lat: 25.0742, lon: 55.1400, height: 360, radius: 24, shape: 'tower', id: 'almas-tower' },
+  { name: 'The Gate, DIFC', lat: 25.2118, lon: 55.2812, height: 80, radius: 40, shape: 'slab', id: 'difc-gate' },
+  { name: 'Dubai World Trade Centre', lat: 25.2253, lon: 55.2873, height: 149, radius: 22, shape: 'slab', id: 'generic-tower' },
+  { name: 'Address Sky View', lat: 25.1938, lon: 55.2742, height: 260, radius: 20, shape: 'twin', id: 'address-tower' },
+  { name: 'The Opus', lat: 25.1856, lon: 55.2668, height: 93, radius: 30, shape: 'slab', id: 'generic-tower' },
+  { name: 'Ubora Towers', lat: 25.1852, lon: 55.2718, height: 261, radius: 20, shape: 'tower', id: 'generic-tower' },
+  { name: 'Park Towers', lat: 25.2093, lon: 55.2786, height: 180, radius: 18, shape: 'twin', id: 'generic-tower' },
+  { name: 'Al Yaqoub Tower', lat: 25.2050, lon: 55.2726, height: 328, radius: 20, shape: 'spire', id: 'al-yaqoub' },
+  { name: 'Al Kazim Towers', lat: 25.1157, lon: 55.2005, height: 265, radius: 20, shape: 'twin', id: 'al-kazim-towers' },
+  { name: 'Sheraton Grand', lat: 25.2205, lon: 55.2795, height: 256, radius: 18, shape: 'tower', id: 'generic-tower' },
+  { name: 'Burj Al Salam', lat: 25.2231, lon: 55.2841, height: 296, radius: 19, shape: 'tower', id: 'generic-tower' },
+  { name: 'Conrad Dubai', lat: 25.2288, lon: 55.2862, height: 233, radius: 20, shape: 'slab', id: 'generic-tower' },
+  // Off-corridor, on the horizon toward the coast — the sail silhouette is
+  // visible from the Barsha end of the run and is pure Dubai shorthand.
+  { name: 'Burj Al Arab', lat: 25.1412, lon: 55.1853, height: 321, radius: 40, shape: 'sail', id: 'burj-al-arab' },
 ];
 
 /** Interchange positions along the corridor, used for checkpoints and gantries. */
