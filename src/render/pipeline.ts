@@ -133,24 +133,29 @@ const COMPOSITE_FRAG = /* glsl */ `${COMMON}
     float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
 
     // Split tone: char in the shadows, gold in the highlights.
-    float sw = pow(1.0 - clamp(lum, 0.0, 1.0), 2.0);
-    float hw = pow(clamp(lum, 0.0, 1.0), 1.6);
+    float sw = pow(1.0 - clamp(lum, 0.0, 1.0), 2.2);
+    float hw = pow(clamp(lum, 0.0, 1.6), 1.6);
 
-    c = mix(c, c * SHADOW_TINT * 3.2, sw * 0.30);
-    // Lift the toe toward ember-deep. Tinting alone only ever multiplies
-    // shadows *down*; the lift is what makes dark surfaces read as warm
-    // charcoal instead of as holes in the frame.
-    c += SHADOW_TINT * sw * 0.085;
+    // CHAR. Shadows are driven hard down and warm-neutral. There is
+    // deliberately no shadow lift here: an earlier version added one to rescue
+    // a road that was being culled rather than under-lit, and once the road
+    // actually rendered that lift was what flattened the whole frame to a
+    // single cream value with no black in it.
+    c = mix(c, c * SHADOW_TINT * 2.4, sw * 0.58);
+    c = mix(c, c * HIGHLIGHT_TINT * 1.22, hw * 0.34);
 
-    c = mix(c, c * HIGHLIGHT_TINT * 1.18, hw * 0.30);
+    // Film toe. A real black point is the difference between "dark" and
+    // "char", and it is what the window emissives and wet-road speculars need
+    // to read against.
+    c = max(vec3(0.0), (c - 0.012) / 0.988);
 
-    c = contrastS(clamp(c, 0.0, 1.0), 1.12);
+    c = contrastS(clamp(c, 0.0, 1.0), 1.32);
 
     // Pull saturation up in the mids only — deep shadows staying desaturated is
     // what reads as "dusk" rather than "orange filter".
     float l2 = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    float midMask = 1.0 - abs(l2 - 0.45) * 1.8;
-    c = mix(vec3(l2), c, 1.0 + clamp(midMask, 0.0, 1.0) * 0.28);
+    float midMask = 1.0 - abs(l2 - 0.42) * 1.9;
+    c = mix(vec3(l2), c, 1.0 + clamp(midMask, 0.0, 1.0) * 0.34);
     return clamp(c, 0.0, 1.0);
   }
 
@@ -269,7 +274,7 @@ export class PostPipeline {
   flash = 0;
   fade = 0;
   focal = new THREE.Vector2(0.5, 0.55);
-  settings: PostSettings = { bloom: 0.9, exposure: 1.0, vignette: 0.9, grain: 0.035 };
+  settings: PostSettings = { bloom: 1.15, exposure: 0.72, vignette: 0.85, grain: 0.028 };
 
   constructor(private renderer: THREE.WebGLRenderer) {
     this.sceneTarget = new THREE.WebGLRenderTarget(1, 1, {
@@ -287,7 +292,12 @@ export class PostPipeline {
       BRIGHT_FRAG,
       {
         tScene: { value: null },
-        uThreshold: { value: new THREE.Vector3(0.7, 0.6, 1.0) },
+        // (knee start, knee width, hard threshold). Raised well above 1.0 so
+        // only genuine emitters — window interiors, signage, headlights, the
+        // sun — reach the bloom pyramid. At the previous 1.0 threshold most of
+        // the lit scene qualified, which turns bloom into a global haze and
+        // means nothing glows because everything glows.
+        uThreshold: { value: new THREE.Vector3(1.35, 1.1, 2.05) },
       },
       'bright',
     );

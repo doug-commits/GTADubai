@@ -529,8 +529,8 @@ export class Game {
     this.post.focal.copy(this.rig.focal);
     this.post.shake = Math.max(0, this.post.shake - dt * 3.6);
     this.post.flash = Math.max(0, this.post.flash - dt * 2.4);
-    this.post.settings.bloom = 0.85 + speed01 * 0.28;
-    this.post.settings.exposure = 1.02 + (this.input.state.boost ? 0.06 : 0);
+    this.post.settings.bloom = 1.10 + speed01 * 0.30;
+    this.post.settings.exposure = 0.72 + (this.input.state.boost ? 0.05 : 0);
     this.post.render(this.scene, this.camera, this.clock);
 
     // Audio follows the sim.

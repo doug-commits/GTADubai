@@ -119,7 +119,11 @@ const ROAD_FRAG = /* glsl */ `
     // patching. Uniform asphalt is the single biggest "this is a game" tell.
     float grain = fbm(vec2(lat, along) * 3.1);
     float patchwork = fbm(vec2(lat * 0.06, along * 0.012));
-    vec3 asphalt = mix(vec3(0.048, 0.044, 0.046), vec3(0.108, 0.099, 0.096), grain * 0.75 + patchwork * 0.45);
+    // Real asphalt reflectance is about 0.04-0.12 dry and lower wet. Keeping it
+    // genuinely dark is what lets the lane paint, the streetlights and the
+    // reflected sunset be the bright things on the ground — a pale road has
+    // nothing to smear against.
+    vec3 asphalt = mix(vec3(0.016, 0.015, 0.017), vec3(0.040, 0.037, 0.035), grain * 0.75 + patchwork * 0.45);
 
     // Darker polished wheel tracks where traffic has worn the surface.
     float laneLocal = mod(lat + uHalfWidth, uLaneWidth) / uLaneWidth;
@@ -131,7 +135,7 @@ const ROAD_FRAG = /* glsl */ `
     }
 
     // Sandy verge either side of the shoulder.
-    vec3 verge = mix(vec3(0.082, 0.062, 0.048), vec3(0.125, 0.096, 0.070), fbm(vec2(lat, along) * 0.35));
+    vec3 verge = mix(vec3(0.030, 0.023, 0.018), vec3(0.055, 0.042, 0.031), fbm(vec2(lat, along) * 0.35));
     vec3 base = mix(asphalt, verge, vEdge);
 
     // ---------------------------------------------------------------- wetness

@@ -10,7 +10,7 @@
     "build": "vite build",
     "preview": "vite preview --port 4173 --strictPort",
     "bake": "node tools/import-osm.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node tools/check-shaders.mjs && tsc --noEmit"
   },
   "dependencies": {
     "three": "^0.185.1"

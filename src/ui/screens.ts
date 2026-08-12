@@ -112,10 +112,20 @@ function whatsappHref(message: string): string {
   return WHATSAPP_URL + '?text=' + encodeURIComponent(message);
 }
 
+/**
+ * Diner-facing copy for a failed voucher claim.
+ *
+ * This deliberately NEVER surfaces the underlying error text. The claim can
+ * fail because the endpoint is unconfigured, in which case the technical
+ * message names a build-time environment variable — and a customer who just
+ * finished a run was being shown "set VITE_VOUCHER_ENDPOINT". The engineering
+ * detail goes to the console, where an engineer will actually see it.
+ */
 function errorMessage(err: unknown): string {
-  if (err instanceof Error && err.message) return err.message;
-  if (typeof err === 'string' && err) return err;
-  return "We couldn't reach the voucher desk.";
+  if (typeof console !== 'undefined') {
+    console.warn('[mukbang] voucher claim failed:', err);
+  }
+  return "We couldn't reach the voucher desk just now. Tap retry — or just show this screen at the door.";
 }
 
 /* ------------------------------------------------------- placeholder art -- */
@@ -424,16 +434,12 @@ export function createTitleScreen(deps: ScreenDeps): TitleScreen {
 
   const row = el('div', 'title-row');
 
-  const seg = el('div', 'mkd-seg');
-  seg.setAttribute('role', 'group');
-  seg.setAttribute('aria-label', 'Camera mode');
-  const chaseBtn = el('button', 'mkd-hit', 'Chase');
-  chaseBtn.type = 'button';
-  const topBtn = el('button', 'mkd-hit', 'Top-down');
-  topBtn.type = 'button';
-  seg.appendChild(chaseBtn);
-  seg.appendChild(topBtn);
-  row.appendChild(seg);
+  // The camera comparison is settled: three independent reviews of the real
+  // rendered frames picked the behind-car chase view, the last of them after
+  // the road-culling bug that had unfairly penalised the top-down was fixed.
+  // A camera picker is a developer control, not something a diner should meet
+  // on a title screen, so the toggle is gone and chase is the only mode.
+  // TopDownRig is retained in src/game/cameras.ts for reference.
 
   const mute = el('button', 'mkd-mute mkd-hit');
   mute.type = 'button';
@@ -454,9 +460,8 @@ export function createTitleScreen(deps: ScreenDeps): TitleScreen {
   root.appendChild(wrap);
 
   function syncCamera(): void {
-    const mode: CameraMode = host.getCameraMode();
-    chaseBtn.setAttribute('aria-pressed', mode === 'chase' ? 'true' : 'false');
-    topBtn.setAttribute('aria-pressed', mode === 'topdown' ? 'true' : 'false');
+    // Chase is the only shipped camera; keep the engine in that mode.
+    if (host.getCameraMode() !== 'chase') host.setCameraMode('chase');
   }
 
   function syncMute(): void {
@@ -477,14 +482,6 @@ export function createTitleScreen(deps: ScreenDeps): TitleScreen {
     }
   });
 
-  press(chaseBtn, host, () => {
-    host.setCameraMode('chase');
-    syncCamera();
-  });
-  press(topBtn, host, () => {
-    host.setCameraMode('topdown');
-    syncCamera();
-  });
   press(mute, host, () => {
     host.audio.setMuted(!host.audio.muted);
     syncMute();
