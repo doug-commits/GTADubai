@@ -1,5 +1,8 @@
 import * as THREE from 'three';
-import { VEHICLE_BODY_GLSL, FOG_GLSL, vehicleUniforms, makeGlowMaterial } from './vehicle-shader';
+import { vehicleUniforms, makeGlowMaterial } from './vehicle-shader';
+import { buildTrafficGeometry, trafficSize, type VehicleKind as ModelKind } from './models/vehicles';
+import { SKY_GLSL } from '../render/sky';
+import { PBR_GLSL, SKY_IBL_GLSL } from '../render/pbr';
 import { LANE_WIDTH } from '../world/corridor';
 import type { CenterlinePath } from '../world/path';
 
@@ -68,8 +71,8 @@ export interface TrafficEvents {
 export class Traffic {
   readonly group = new THREE.Group();
   private v: Vehicle[] = [];
-  private bodies: THREE.InstancedMesh;
-  private cabins: THREE.InstancedMesh;
+  private kindMeshes: THREE.InstancedMesh[] = [];
+  private kindSize: Array<{ w: number; h: number; d: number }> = [];
   private tails: THREE.InstancedMesh;
   private smears: THREE.InstancedMesh;
   private bodyMat: THREE.RawShaderMaterial;
@@ -99,33 +102,51 @@ export class Traffic {
       `,
       fragmentShader: /* glsl */ `
         precision highp float;
+        precision highp int;
+        precision highp sampler2D;
         in vec3 vN; in vec3 vW; in vec3 vC;
         out vec4 outColor;
         uniform vec3 uCameraPos, uSunDir;
         uniform float uFogNear, uFogFar;
-        ${VEHICLE_BODY_GLSL}
-        ${FOG_GLSL}
+        ${SKY_GLSL}
+        ${PBR_GLSL}
+        ${SKY_IBL_GLSL}
         void main() {
           vec3 N = normalize(vN);
           vec3 V = normalize(vW - uCameraPos);
-          vec3 col = carPaint(N, V, vC, uSunDir, 0.80, 0.55);
-          col = applyFog(col, vW, uCameraPos, uSunDir, uFogNear, uFogFar);
+          // Same clearcoat treatment as the hero car, a touch rougher — these
+          // are everyday cars at the end of a dusty day, not showroom stock.
+          Surface s = makeSurface(vC, 0.55, filterRoughness(N, 0.34), N, V);
+          s.clearcoat = 0.75;
+          s.clearcoatRoughness = 0.09;
+          vec3 R = reflect(V, N);
+          vec3 col = shadeIBL(s, skyIrradiance(N, uSunDir), skyPrefiltered(R, s.roughness, uSunDir));
+          col += shadeDirect(s, uSunDir, vec3(3.4, 1.5, 0.55));
+          float fog = smoothstep(uFogNear, uFogFar, length(vW - uCameraPos));
+          col = mix(col, skyRadiance(normalize(vec3(V.x, 0.03, V.z)), uSunDir), fog);
           outColor = vec4(col, 1.0);
         }
       `,
     });
 
-    const box = new THREE.BoxGeometry(1, 1, 1);
-    this.bodies = new THREE.InstancedMesh(box, this.bodyMat, POOL);
-    this.cabins = new THREE.InstancedMesh(box.clone(), this.bodyMat, POOL);
-    const colors = new Float32Array(POOL * 3);
-    this.bodies.geometry.setAttribute('aColor', new THREE.InstancedBufferAttribute(colors, 3));
-    this.cabins.geometry.setAttribute(
-      'aColor',
-      new THREE.InstancedBufferAttribute(new Float32Array(colors), 3),
-    );
-    this.bodies.frustumCulled = false;
-    this.cabins.frustumCulled = false;
+    // One InstancedMesh per vehicle kind: each kind now has its own real
+    // silhouette, so they cannot share a single box geometry any more. Five
+    // draw calls instead of two, in exchange for traffic that reads as cars.
+    const KIND_MODEL: ModelKind[] = ['sedan', 'suv', 'taxi', 'bus', 'truck'];
+    KIND_MODEL.forEach((mk, i) => {
+      const geo = buildTrafficGeometry(mk);
+      const mesh = new THREE.InstancedMesh(geo, this.bodyMat, POOL);
+      mesh.geometry.setAttribute(
+        'aColor',
+        new THREE.InstancedBufferAttribute(new Float32Array(POOL * 3), 3),
+      );
+      mesh.frustumCulled = false;
+      mesh.count = 0;
+      this.kindMeshes[i] = mesh;
+      this.group.add(mesh);
+      const sz = trafficSize(mk);
+      this.kindSize[i] = { w: sz.x, h: sz.y, d: sz.z };
+    });
 
     const quad = new THREE.PlaneGeometry(1, 1);
     this.tails = new THREE.InstancedMesh(
@@ -151,7 +172,7 @@ export class Traffic {
     this.smears.frustumCulled = false;
     this.smears.renderOrder = 7;
 
-    this.group.add(this.bodies, this.cabins, this.tails, this.smears);
+    this.group.add(this.tails, this.smears);
 
     for (let i = 0; i < POOL; i++) {
       this.v.push({
@@ -192,9 +213,12 @@ export class Traffic {
     v.targetLane = lane;
     v.t = LANE_T[lane];
     v.kind = kind;
-    v.w = spec.w;
-    v.h = spec.h;
-    v.d = spec.d;
+    // Collision extents come from the actual model bounds so the hitbox
+    // matches what the player can see.
+    const size = this.kindSize[kind] ?? spec;
+    v.w = size.w;
+    v.h = size.h;
+    v.d = size.d;
     v.scored = false;
     v.laneCooldown = rnd(2, 9);
     // Left lanes run faster, exactly as they do on the real road.
@@ -218,11 +242,10 @@ export class Traffic {
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const up = new THREE.Vector3(0, 1, 0);
+    const ONE = new THREE.Vector3(1, 1, 1);
     const pos = new THREE.Vector3();
     const scl = new THREE.Vector3();
-    const bodyCol = this.bodies.geometry.getAttribute('aColor') as THREE.InstancedBufferAttribute;
-    const cabinCol = this.cabins.geometry.getAttribute('aColor') as THREE.InstancedBufferAttribute;
-
+    const kindCount = [0, 0, 0, 0, 0];
     let n = 0;
     let tailN = 0;
 
@@ -280,21 +303,14 @@ export class Traffic {
       const z = p.z + p.nz * v.t;
       q.setFromAxisAngle(up, p.heading);
 
-      pos.set(x, v.h * 0.5 + 0.32, z);
-      scl.set(v.w, v.h, v.d);
-      m.compose(pos, q, scl);
-      this.bodies.setMatrixAt(n, m);
-
-      const cabinFrac = KIND_SPEC[v.kind].cabin;
-      pos.set(x, v.h + 0.32 + v.h * cabinFrac * 0.5, z);
-      scl.set(v.w * 0.86, v.h * cabinFrac, v.d * (v.kind >= 3 ? 0.9 : 0.52));
-      m.compose(pos, q, scl);
-      this.cabins.setMatrixAt(n, m);
-
-      bodyCol.setXYZ(n, v.colour.r, v.colour.g, v.colour.b);
-      // Taxi roofs are the giveaway silhouette in Dubai traffic.
-      if (v.kind === 2) cabinCol.setXYZ(n, 0.72, 0.10, 0.08);
-      else cabinCol.setXYZ(n, v.colour.r * 0.6, v.colour.g * 0.6, v.colour.b * 0.6);
+      // Geometry is already built at real size, so no scaling — just place it.
+      const km = this.kindMeshes[v.kind];
+      const ki = kindCount[v.kind]++;
+      pos.set(x, 0, z);
+      m.compose(pos, q, ONE);
+      km.setMatrixAt(ki, m);
+      (km.geometry.getAttribute('aColor') as THREE.InstancedBufferAttribute)
+        .setXYZ(ki, v.colour.r, v.colour.g, v.colour.b);
 
       // Taillights, brighter when we are closing on them.
       const closing = THREE.MathUtils.clamp(1 - Math.abs(ds) / 200, 0.25, 1);
@@ -327,16 +343,16 @@ export class Traffic {
       n++;
     }
 
-    this.bodies.count = n;
-    this.cabins.count = n;
+    for (let k = 0; k < this.kindMeshes.length; k++) {
+      const km = this.kindMeshes[k];
+      km.count = kindCount[k];
+      km.instanceMatrix.needsUpdate = true;
+      (km.geometry.getAttribute('aColor') as THREE.InstancedBufferAttribute).needsUpdate = true;
+    }
     this.smears.count = n;
     this.tails.count = tailN;
-    this.bodies.instanceMatrix.needsUpdate = true;
-    this.cabins.instanceMatrix.needsUpdate = true;
     this.tails.instanceMatrix.needsUpdate = true;
     this.smears.instanceMatrix.needsUpdate = true;
-    bodyCol.needsUpdate = true;
-    cabinCol.needsUpdate = true;
     this.tailTint.needsUpdate = true;
     this.smearTint.needsUpdate = true;
 

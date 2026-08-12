@@ -501,7 +501,10 @@ function buildBurjKhalifa(): LandmarkMesh {
  */
 function buildMuseumOfTheFuture(): LandmarkMesh {
   const H = 77;
-  const MOUND_H = 8;
+  // Mound crown sits ~2.5 m proud of the ring's underside so the ring is
+  // PLANTED in the hill. A torus standing on a vertical tangent point looks
+  // like it is balancing; the real building grows out of the landscaping.
+  const MOUND_H = 10.5;
   const MAJOR = 36; // facets around the ring
   const TUBE = 12; // facets across the section
 
@@ -510,7 +513,7 @@ function buildMuseumOfTheFuture(): LandmarkMesh {
   const Ry = 22.5;
   const tIn = 12; // section half-thickness in the plane of the ring
   const tDepth = 15; // half-depth, i.e. the building is ~30 m thick
-  const centreY = H - (Ry + tIn); // ring's underside lands on the mound top
+  const centreY = H - (Ry + tIn); // ring tops out at 77 m; its foot is buried
   const TILT = THREE.MathUtils.degToRad(6); // the real ring is not level
 
   const rings: Ring[] = [];
@@ -542,8 +545,8 @@ function buildMuseumOfTheFuture(): LandmarkMesh {
   }
   const ringGeo = loft(rings, { closed: true, smooth: true, unitUV: true, swapUV: true });
 
-  // Green mound: 112 x 80 m, 8 m high. The building famously grows out of it.
-  const mound = latheProfile([[56, 0], [50, 3.0], [34, 6.2], [0, MOUND_H]], 18, 1, 0.72);
+  // Green mound: 112 x 80 m. The building famously grows out of it.
+  const mound = latheProfile([[56, 0], [50, 3.9], [34, 8.1], [0, MOUND_H]], 18, 1, 0.72);
 
   // Emissive: the lip of the void is lit from within, which is what makes the
   // hole read as a hole at dusk rather than as a dark patch.
