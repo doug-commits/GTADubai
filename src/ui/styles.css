@@ -91,6 +91,21 @@
   text-decoration: none;
 }
 
+/*
+ * index.html sets `touch-action: none` on <html, body> to protect drag-to-steer.
+ * Effective touch-action is the intersection down the ancestor chain, so that
+ * one declaration also kills touch scrolling inside our win/fail sheets and
+ * panels. Relax it to `manipulation` (auto minus double-tap zoom): the canvas
+ * keeps its own `#stage { touch-action: none }`, which still intersects to
+ * `none`, and the document itself cannot scroll anyway (height:100%,
+ * overflow:hidden, overscroll-behavior:none). This is loaded after the inline
+ * <style>, so it wins on order at equal specificity.
+ */
+html,
+body {
+  touch-action: manipulation;
+}
+
 /* No visible scrollbars — this is a game, not a document. */
 .mkd ::-webkit-scrollbar {
   width: 0;
@@ -102,6 +117,10 @@
   -ms-overflow-style: none;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+.mkd .lb-branches.mkd-scroll {
+  touch-action: pan-x;
 }
 
 /* Anything interactive: opts back into hit-testing, gets a real touch target. */
