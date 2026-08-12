@@ -87,6 +87,23 @@ export const SKY_GLSL = /* glsl */ `
     col = mix(col, vec3(0.230, 0.150, 0.098), smoothstep(-0.02, -0.24, h));
     return col;
   }
+
+  // Aerial perspective. Distance does not just fade a surface toward a flat
+  // fog colour — it also washes the colour out of it and lifts its floor,
+  // because the air between camera and subject is itself scattering light.
+  // Applying all three is what separates real depth from a fog slider.
+  vec3 aerial(vec3 col, vec3 worldPos, vec3 camPos, vec3 sunDir, float near, float far) {
+    vec3 V = normalize(worldPos - camPos);
+    float dist = length(worldPos - camPos);
+    float t = clamp((dist - near) / max(far - near, 1.0), 0.0, 1.0);
+    // Dust extinction is roughly exponential, not linear.
+    float ext = 1.0 - exp(-t * 2.6);
+    vec3 hazeCol = skyRadiance(normalize(vec3(V.x, max(V.y, 0.012), V.z)), sunDir);
+    // Desaturate before mixing: distant things lose chroma faster than luminance.
+    float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+    col = mix(col, vec3(l), ext * 0.55);
+    return mix(col, hazeCol, ext);
+  }
 `;
 
 const SKY_VERT = /* glsl */ `

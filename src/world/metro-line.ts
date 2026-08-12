@@ -149,7 +149,7 @@ function concreteMaterial(name: string, fogNear: number, fogFar: number) {
         col += vec3(1.0, 0.42, 0.16) * max(-N.y, 0.0) * 0.06;
 
         float fog = smoothstep(uFogNear, uFogFar, dist);
-        col = mix(col, skyRadiance(normalize(vec3(V.x, 0.03, V.z)), uSunDir), fog * 0.94);
+        col = aerial(col, vW, uCameraPos, uSunDir, uFogNear, uFogFar);
         outColor = vec4(col, 1.0);
       }
     `,
@@ -326,7 +326,7 @@ export class MetroLine {
           // Fronds are thin: let some sun through from behind.
           col += vec3(1.0, 0.55, 0.20) * pow(max(dot(V, uSunDir), 0.0), 3.0) * 0.35;
           float fog = smoothstep(uFogNear, uFogFar, length(vW - uCameraPos));
-          col = mix(col, skyRadiance(normalize(vec3(V.x, 0.03, V.z)), uSunDir), fog * 0.92);
+          col = aerial(col, vW, uCameraPos, uSunDir, uFogNear, uFogFar);
           outColor = vec4(col, 1.0);
         }
       `,

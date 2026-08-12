@@ -666,7 +666,7 @@ export class Landmarks {
           col += interior * lit * (0.35 + 0.75 * h21(vec2(bay + 5.0, row - 3.0))) * 1.5;
 
           float fog = smoothstep(uFogNear, uFogFar, dist);
-          col = mix(col, skyRadiance(normalize(vec3(V.x, 0.05, V.z)), uSunDir), fog * 0.95);
+          col = aerial(col, vW, uCameraPos, uSunDir, uFogNear, uFogFar);
           outColor = vec4(col, 1.0);
         }
       `,

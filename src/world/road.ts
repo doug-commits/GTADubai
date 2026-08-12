@@ -135,7 +135,11 @@ const ROAD_FRAG = /* glsl */ `
     }
 
     // Sandy verge either side of the shoulder.
-    vec3 verge = mix(vec3(0.030, 0.023, 0.018), vec3(0.055, 0.042, 0.031), fbm(vec2(lat, along) * 0.35));
+    // Irrigated turf. Sheikh Zayed Road is planted and watered its whole
+    // length — mown grass, low hedging and palm beds run right up to the hard
+    // shoulder. Sand-coloured verges read as desert highway, not as this road.
+    vec3 verge = mix(vec3(0.048, 0.092, 0.038), vec3(0.086, 0.148, 0.058), fbm(vec2(lat, along) * 0.35));
+    verge = mix(verge, vec3(0.135, 0.118, 0.082), smoothstep(0.55, 0.95, fbm(vec2(lat * 0.4, along * 0.06))));
     vec3 base = mix(asphalt, verge, vEdge);
 
     // ---------------------------------------------------------------- wetness
@@ -508,7 +512,7 @@ export class Barriers {
 
           float dist = length(vW - uCameraPos);
           float fog = smoothstep(uFogNear, uFogFar, dist);
-          col = mix(col, skyRadiance(normalize(vec3(V.x, 0.03, V.z)), uSunDir), fog * 0.92);
+          col = aerial(col, vW, uCameraPos, uSunDir, uFogNear, uFogFar);
           outColor = vec4(col, 1.0);
         }
       `,

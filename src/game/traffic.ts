@@ -151,7 +151,7 @@ export class Traffic {
           vec3 col = shadeIBL(s, skyIrradiance(N, uSunDir), skyPrefiltered(R, s.roughness, uSunDir));
           col += shadeDirect(s, uSunDir, vec3(3.4, 1.5, 0.55));
           float fog = smoothstep(uFogNear, uFogFar, length(vW - uCameraPos));
-          col = mix(col, skyRadiance(normalize(vec3(V.x, 0.03, V.z)), uSunDir), fog);
+          col = aerial(col, vW, uCameraPos, uSunDir, uFogNear, uFogFar);
           outColor = vec4(col, 1.0);
         }
       `,
