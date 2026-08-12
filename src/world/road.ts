@@ -105,8 +105,8 @@ const ROAD_FRAG = /* glsl */ `
     // Two noise octaves at very different scales: fine aggregate plus broad
     // patching. Uniform asphalt is the single biggest "this is a game" tell.
     float grain = fbm(vec2(lat, along) * 3.1);
-    float patch = fbm(vec2(lat * 0.06, along * 0.012));
-    vec3 asphalt = mix(vec3(0.020, 0.019, 0.022), vec3(0.052, 0.048, 0.050), grain * 0.75 + patch * 0.45);
+    float patchwork = fbm(vec2(lat * 0.06, along * 0.012));
+    vec3 asphalt = mix(vec3(0.020, 0.019, 0.022), vec3(0.052, 0.048, 0.050), grain * 0.75 + patchwork * 0.45);
 
     // Darker polished wheel tracks where traffic has worn the surface.
     float laneLocal = mod(lat + uHalfWidth, uLaneWidth) / uLaneWidth;

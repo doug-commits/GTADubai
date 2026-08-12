@@ -224,6 +224,19 @@ export class PostPipeline {
   private height = 1;
   private pixelRatio = 1;
 
+  /**
+   * Draw calls and triangles for the SCENE pass alone, snapshotted before the
+   * post chain runs. `renderer.info` resets on every render() call, so reading
+   * it after the composite pass reports "1 draw call, 1 triangle" — the
+   * fullscreen triangle — and hides the cost that actually matters.
+   */
+  readonly sceneStats = { drawCalls: 0, triangles: 0 };
+
+  /** Number of levels in the bloom pyramid, for cost reporting. */
+  get bloomLevels() {
+    return this.bright.length;
+  }
+
   /** Live, tweakable per frame. */
   speed01 = 0;
   shake = 0;
@@ -315,6 +328,8 @@ export class PostPipeline {
     r.setRenderTarget(this.sceneTarget);
     r.clear(true, true, true);
     r.render(scene, camera);
+    this.sceneStats.drawCalls = r.info.render.calls;
+    this.sceneStats.triangles = r.info.render.triangles;
 
     // Bright extract into level 0.
     this.brightPass.material.uniforms.tScene.value = this.sceneTarget.texture;

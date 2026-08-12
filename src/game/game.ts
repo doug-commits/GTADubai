@@ -415,8 +415,10 @@ export class Game {
   get renderStats() {
     const i = this.renderer.info;
     return {
-      drawCalls: i.render.calls,
-      triangles: i.render.triangles,
+      // Scene pass only — see PostPipeline.sceneStats.
+      drawCalls: this.post.sceneStats.drawCalls,
+      triangles: this.post.sceneStats.triangles,
+      postPasses: 2 + (this.post.bloomLevels - 1) * 2,
       programs: i.programs?.length ?? 0,
       geometries: i.memory.geometries,
       textures: i.memory.textures,
