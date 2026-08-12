@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { SKY_GLSL, SUN_DIR } from '../render/sky';
+import { FACADE_VERT, FACADE_FRAG, facadeUniforms } from './facade';
 import type { Corridor } from './corridor';
 import { ROAD_HALF_WIDTH } from './corridor';
 
@@ -317,17 +318,9 @@ export class City {
     this.material = new THREE.RawShaderMaterial({
       name: 'buildings',
       glslVersion: THREE.GLSL3,
-      uniforms: {
-        uCameraPos: { value: new THREE.Vector3() },
-        uSunDir: { value: SUN_DIR.clone() },
-        uTime: { value: 0 },
-        uFogNear: { value: 420 },
-        uFogFar: { value: 2600 },
-        tFacade: { value: null },
-        uHasFacade: { value: 0 },
-      },
-      vertexShader: BUILDING_VERT,
-      fragmentShader: BUILDING_FRAG,
+      uniforms: facadeUniforms(),
+      vertexShader: FACADE_VERT,
+      fragmentShader: FACADE_FRAG,
       side: THREE.FrontSide,
     });
 

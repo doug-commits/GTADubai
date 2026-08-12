@@ -88,11 +88,25 @@ const SKY_FRAG = /* glsl */ `
     vec3 col = skyRadiance(dir, uSunDir);
 
     // A few stars in the upper band, fading out toward the ember horizon.
-    if (dir.y > 0.18) {
-      vec2 sc = dir.xz / max(dir.y, 0.2) * 22.0;
-      float s = hash21(floor(sc));
-      float tw = 0.6 + 0.4 * sin(uTime * 1.7 + s * 40.0);
-      col += vec3(0.9, 0.92, 1.0) * step(0.9965, s) * tw * smoothstep(0.18, 0.55, dir.y) * 0.55;
+    //
+    // Parameterised on the sphere, not by dividing xz by y. That planar
+    // projection stretched without bound as dir.y approached the cutoff, so
+    // each hashed cell became a huge screen-space rectangle — the "floating
+    // white diamonds" that were showing up above the skyline. Each star is
+    // also drawn as a round point inside its cell rather than filling it.
+    if (dir.y > 0.16) {
+      vec2 sph = vec2(atan(dir.z, dir.x) / 6.2831853 + 0.5,
+                      asin(clamp(dir.y, -1.0, 1.0)) / 1.5707963);
+      vec2 grid = sph * vec2(460.0, 190.0);
+      vec2 cell = floor(grid);
+      float s = hash21(cell);
+      if (s > 0.9972) {
+        vec2 f = fract(grid) - 0.5;
+        float point = smoothstep(0.30, 0.02, length(f));
+        float tw = 0.55 + 0.45 * sin(uTime * 1.7 + s * 400.0);
+        col += vec3(0.86, 0.90, 1.0) * point * tw
+             * smoothstep(0.16, 0.52, dir.y) * 0.5;
+      }
     }
 
     // ASSET SLOT blend: supplied equirect skybox takes over when loaded.
