@@ -232,7 +232,10 @@ export class Car {
     this.brakeGlow.push(b1, b2);
 
     // Forward light pool cast onto the road, flat on the ground plane.
-    const poolMat = makeGlowMaterial(new THREE.Color(1.0, 0.80, 0.58), 1.9, 0.85, true);
+    // Soft and dim: against a correctly dark road this reads as a headlight
+    // wash, whereas the previous gain painted a hard white rectangle on the
+    // tarmac ahead of the car.
+    const poolMat = makeGlowMaterial(new THREE.Color(1.0, 0.82, 0.60), 3.2, 0.34, true);
     const pool = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), poolMat, 1);
     const m = new THREE.Matrix4();
     m.compose(

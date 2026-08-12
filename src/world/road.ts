@@ -166,8 +166,11 @@ const ROAD_FRAG = /* glsl */ `
     // carriageway by a wide margin, and the dashes streaking toward the camera
     // are the main thing selling speed on the ground plane.
     float paintWear = 0.68 + 0.32 * fbm(vec2(lat * 2.0, along * 0.6));
+    // Real road-marking reflectance is around 0.35-0.55, not 1.0. Driving it to
+    // white made every dash blow out into a solid slab once the road behind it
+    // was correctly dark — brightest-on-the-ground does not mean clipping.
     // Only lightly wet-darkened: standing water dulls paint far less than tarmac.
-    vec3 paintCol = vec3(1.02, 0.95, 0.80) * paintWear * (1.0 - wet * 0.12);
+    vec3 paintCol = vec3(0.44, 0.41, 0.35) * paintWear * (1.0 - wet * 0.12);
     base = mix(base, paintCol, paint * 0.95);
 
     // Rumble strip on the hard shoulder.
@@ -189,8 +192,13 @@ const ROAD_FRAG = /* glsl */ `
     // Grazing angles reflect far more — this is what stretches the ember horizon
     // into a long streak down the road ahead.
     float fres = pow(1.0 - max(dot(-V, vec3(0.0, 1.0, 0.0)), 0.0), 4.0);
-    float reflAmt = wet * (0.10 + fres * 0.92);
-    vec3 col = mix(base, refl, clamp(reflAmt, 0.0, 0.88));
+    // Cap the mirror term well below 1. A physically "correct" grazing-angle
+    // blend of ~0.9 turns the middle distance into one flat pale sheet, which
+    // reads as fog rather than as tarmac; holding some albedo through keeps
+    // the surface legible and lets the lane paint stay the brightest thing.
+    // Break it up with the puddle mask so the sheen pools rather than covering.
+    float reflAmt = wet * (0.08 + fres * 0.62) * (0.55 + puddle * 0.65);
+    vec3 col = mix(base, refl, clamp(reflAmt, 0.0, 0.66));
 
     // Sun glint stretched along the road, plus sparkle on the wet grain.
     float sunSpec = pow(max(dot(R, uSunDir), 0.0), 48.0);
