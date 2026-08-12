@@ -51,6 +51,7 @@ export class Storefront {
       `,
       fragmentShader: /* glsl */ `
         precision highp float;
+          precision highp sampler2D;
         in vec2 vUv; out vec4 outColor;
         uniform float uTime;
         void main() {
@@ -89,6 +90,7 @@ export class Storefront {
       `,
       fragmentShader: /* glsl */ `
         precision highp float;
+          precision highp sampler2D;
         in vec2 vUv; out vec4 outColor;
         uniform float uTime; uniform sampler2D tSign; uniform float uHasSign;
         void main() {

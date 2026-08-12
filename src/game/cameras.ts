@@ -147,17 +147,17 @@ export class TopDownRig implements CameraRig {
     this.heading += dh * (1 - Math.exp(-dt * 5.5));
 
     camera.position.copy(this.pos);
-    // A few degrees off straight-down keeps building sides visible, which is
-    // what stops the view reading as a flat map.
-    const tilt = 0.30;
+    // Pull back along the heading rather than sitting straight overhead. The
+    // resulting few degrees of tilt keeps the sides of buildings visible, which
+    // is what stops the view reading as a flat map — GTA 1/2 did the same.
     const back = 20 + speed01 * 10;
     camera.position.x -= Math.sin(this.heading) * back;
     camera.position.z += Math.cos(this.heading) * back;
 
+    // Looking at the ground point under the focus puts the road running up the
+    // screen, with the car's heading baked into the view geometry.
     _look.set(this.pos.x, 0, this.pos.z);
     camera.lookAt(_look);
-    camera.rotation.z += 0; // heading is already baked into the lookAt geometry
-    void tilt;
 
     const t = performance.now() * 0.001;
     const amp = 0.004 + speed01 * 0.010;

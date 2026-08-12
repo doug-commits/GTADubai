@@ -392,7 +392,7 @@ class AudioCore {
   // Tension drone.
   private readonly tensionLevel: Slewed;
   private readonly tensionLP: Slewed;
-  private readonly tensionLfo: OscillatorNode;
+  private readonly tensionRate: Slewed;
   private readonly tensionDepth: Slewed;
   private readonly tensionDiss: Slewed;
 
@@ -679,13 +679,14 @@ class AudioCore {
     pulse.gain.value = 0.5;
     tLP.connect(pulse).connect(this.tensionBus);
 
-    this.tensionLfo = ctx.createOscillator();
-    this.tensionLfo.type = 'sine';
-    this.tensionLfo.frequency.value = 1.4;
+    const lfo = ctx.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = 1.4;
     const depth = ctx.createGain();
     depth.gain.value = 0;
-    this.tensionLfo.connect(depth).connect(pulse.gain);
-    this.tensionLfo.start();
+    lfo.connect(depth).connect(pulse.gain);
+    lfo.start();
+    this.tensionRate = new Slewed(lfo.frequency, TC_TENSION, 0.02);
     this.tensionDepth = new Slewed(depth.gain, TC_TENSION, 0.004);
 
     const tSub = ctx.createOscillator();
@@ -969,7 +970,7 @@ class AudioCore {
   checkpoint(): void {
     const t = this.ctx.currentTime;
     const ctx = this.ctx;
-    if (!this.budget(12)) return;
+    if (!this.budget(14)) return; // 6 notes x 2 layers + the shared tail
 
     // Warm rather than glassy: one shared lowpass across the whole arpeggio,
     // so the top notes do not spike over the engine.
@@ -1052,6 +1053,8 @@ class AudioCore {
   arrive(): void {
     const t = this.ctx.currentTime;
     const ctx = this.ctx;
+    // Deliberately not budget-checked, same as crash(): the payoff sting and
+    // the impact are the two sounds that must never be the ones we drop.
 
     // sus4 -> maj9. The suspension holds for a beat and then lands, which is
     // what makes it read as "you made it" instead of just "a chord".
@@ -1122,12 +1125,14 @@ class AudioCore {
   setTension(v: number): void {
     const t = this.ctx.currentTime;
     const x = safe(v, 0, 0, 1);
-    // Curved hard so the drone stays genuinely out of the way early on: at
-    // x = 0.2 it is a fifth of a fifth, not a fifth.
+    // Curved hard so the drone stays genuinely out of the way early on:
+    // v = 0.2 gives 0.06 of full level, not 0.2. v = 0 is exact silence.
     this.tensionLevel.set(t, Math.pow(x, 1.7) * MIX.tension);
     this.tensionLP.set(t, 150 + x * 520);
     this.tensionDepth.set(t, x * 0.48);
-    this.tensionLfo.frequency.setTargetAtTime(1.4 + x * 4.1, t, TC_TENSION);
+    // The pulse speeding up from a slow heave to a near-panic flutter does more
+    // work than the level does — it is the part players feel in their chest.
+    this.tensionRate.set(t, 1.4 + x * 4.1);
     // Dissonance is held back until the last third — used earlier it just reads
     // as an out-of-tune synth.
     this.tensionDiss.set(t, Math.max(0, x - 0.45) / 0.55 * 0.3);

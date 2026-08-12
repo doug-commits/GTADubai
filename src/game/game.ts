@@ -72,6 +72,8 @@ export class Game {
   private arriveT = 0;
   private accumulator = 0;
   private lastFrame = 0;
+  /** Throttle for skid retriggers — see `maybeSkid`. */
+  private skidCooldown = 0;
   private sample: PathSample = {
     x: 0, z: 0, tx: 0, tz: 0, nx: 0, nz: 0, curvature: 0, heading: 0,
   };
@@ -390,7 +392,19 @@ export class Game {
     this.car.vt *= 1 - Math.min(1, dt * 4);
     this.car.t += this.car.vt * dt;
     this.arriveT += dt;
-    if (this.car.speed > 4) this.audio.skid(Math.min(1, this.car.speed / 30));
+    if (this.car.speed > 4) this.maybeSkid(dt, Math.min(1, this.car.speed / 30));
+  }
+
+  /**
+   * Skid is a one-shot with an envelope. Firing it every frame retriggers the
+   * attack 60-120 times a second, which buzzes instead of screeching — so it
+   * gets re-armed on a cooldown that shortens with intensity.
+   */
+  private maybeSkid(dt: number, intensity: number) {
+    this.skidCooldown -= dt;
+    if (this.skidCooldown > 0) return;
+    this.skidCooldown = 0.16 - intensity * 0.07;
+    this.audio.skid(intensity);
   }
 
   /**
@@ -468,7 +482,7 @@ export class Game {
       this.phase === 'running' ? 1 - this.input.state.brake * 0.7 : 0.25,
       this.car.speed * 3.6,
     );
-    if (this.car.slip > 0.35 && this.phase === 'running') this.audio.skid(this.car.slip);
+    if (this.car.slip > 0.35 && this.phase === 'running') this.maybeSkid(dt, this.car.slip);
 
     // Telemetry for the HUD.
     const t = this.telemetry;

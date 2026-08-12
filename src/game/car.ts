@@ -207,7 +207,9 @@ export class Car {
     const quad = new THREE.PlaneGeometry(1, 1);
 
     const mk = (mat: THREE.RawShaderMaterial, x: number, y: number, z: number, sc: number) => {
-      const im = new THREE.InstancedMesh(quad, mat, 1);
+      // Clone the geometry per light: `aTint` is a per-geometry attribute, so a
+      // shared BufferGeometry would make the brake lights drive the headlights.
+      const im = new THREE.InstancedMesh(quad.clone(), mat, 1);
       const m = new THREE.Matrix4();
       m.compose(new THREE.Vector3(0, 0, 0), new THREE.Quaternion(), new THREE.Vector3(sc, sc, sc));
       im.setMatrixAt(0, m);

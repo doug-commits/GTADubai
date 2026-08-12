@@ -47,8 +47,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function main() {
   const browser = await chromium.launch({
     headless: !HEADFUL,
-    // PLAYWRIGHT_BROWSERS_PATH is preconfigured in this environment; let
-    // Playwright resolve the binary rather than hard-coding a versioned path.
+    // This image ships a preinstalled Chromium that may not match the build the
+    // installed Playwright expects. Use the stable symlink rather than letting
+    // Playwright try to download one.
+    executablePath: process.env.CHROMIUM_PATH ?? '/opt/pw-browsers/chromium',
     args: [
       '--use-gl=swiftshader',
       '--enable-unsafe-swiftshader',
@@ -62,10 +64,24 @@ async function main() {
   const page = await context.newPage();
 
   const consoleErrors = [];
+  const missingAssets = new Set();
+  // A 404 on an asset slot is the expected state until the client supplies art;
+  // separating those keeps the real errors visible instead of buried.
+  const isAssetSlot404 = (text) =>
+    /assets\/(sky|road|buildings|billboards|storefront|brand|car)\//.test(text) ||
+    /data\/corridor\.json/.test(text);
+
   page.on('console', (m) => {
-    if (m.type() === 'error') consoleErrors.push(m.text());
+    if (m.type() !== 'error') return;
+    const t = m.text();
+    if (isAssetSlot404(t)) missingAssets.add(t.replace(/^.*?(assets|data)\//, '$1/').slice(0, 90));
+    else consoleErrors.push(t);
   });
   page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
+  page.on('requestfailed', (r) => {
+    const u = r.url();
+    if (isAssetSlot404(u)) missingAssets.add(u.replace(/^.*?\/(assets|data)\//, '$1/'));
+  });
 
   // --- instrument the frame clock before any app code runs -----------------
   await page.addInitScript(() => {
@@ -213,6 +229,7 @@ async function main() {
     load: { readyMs, firstContentfulPaintMs: firstPaint },
     perf,
     consoleErrors: consoleErrors.slice(0, 40),
+    assetSlotsNotSupplied: [...missingAssets].sort(),
     note:
       'Rendered under SwiftShader (software GL) in CI. Frame times are a FLOOR, not a phone number — treat relative changes between rounds as the signal, and judge look from the pixels.',
   };

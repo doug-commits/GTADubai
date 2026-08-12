@@ -15,9 +15,14 @@ import { FullScreenPass, makeTarget } from './fsq';
 
 const BLOOM_LEVELS = 5;
 
+// RawShaderMaterial injects nothing, so every precision qualifier has to be
+// declared here. `sampler2D` matters more than it looks: GLSL ES 3.0 defaults
+// samplers to lowp, which would clamp our half-float HDR reads to roughly
+// [-2, 2] and silently destroy the bloom pyramid.
 const COMMON = /* glsl */ `
   precision highp float;
   precision highp int;
+  precision highp sampler2D;
 `;
 
 const BRIGHT_FRAG = /* glsl */ `${COMMON}

@@ -181,7 +181,6 @@ export function createHud(host: UiHost): HudView {
   let lastTenths = -1;
   let lastSecond = -1;
   let hot = false;
-  let lastTensionQ = -1;
   let lastHeatQ = -1;
   let lastRailQ = -1;
   let lastDistKey = -1;
@@ -220,7 +219,6 @@ export function createHud(host: UiHost): HudView {
     totalDistance = -1;
     lastTenths = -1;
     lastSecond = -1;
-    lastTensionQ = -1;
     lastHeatQ = -1;
     lastRailQ = -1;
     lastDistKey = -1;
@@ -297,13 +295,13 @@ export function createHud(host: UiHost): HudView {
       }
     }
 
-    // Tension drives the audio layer. Quantised so we do not spam the engine.
+    // The clock is the tension carrier, so it owns `setTension`. Written on
+    // EVERY frame on purpose: the engine's sim step also writes tension, and
+    // `ui.tick()` runs after it — skipping frames here would let the two
+    // curves alternate and warble the low-time layer. It is one call with no
+    // allocation, so the steady-state cost is nil.
     const tension = wantHot ? 1 - left / HOT_WINDOW : 0;
-    const tensionQ = (tension * 64) | 0;
-    if (tensionQ !== lastTensionQ) {
-      lastTensionQ = tensionQ;
-      host.audio.setTension(tensionQ / 64);
-    }
+    host.audio.setTension(tension);
     const heatQ = (tension * 16) | 0;
     if (heatQ !== lastHeatQ) {
       lastHeatQ = heatQ;

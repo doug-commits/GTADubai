@@ -72,6 +72,7 @@ const BUILDING_VERT = /* glsl */ `
 
 const BUILDING_FRAG = /* glsl */ `
   precision highp float;
+          precision highp sampler2D;
   in vec3 vNormal;
   in vec3 vWorld;
   in vec3 vLocal;
@@ -450,6 +451,7 @@ export class Furniture {
       `,
       fragmentShader: /* glsl */ `
         precision highp float;
+          precision highp sampler2D;
         in vec2 vUv;
         out vec4 outColor;
         uniform vec3 uColor;

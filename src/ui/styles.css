@@ -1039,6 +1039,14 @@
 .mkd-hero img.is-loaded {
   opacity: 1;
 }
+.mkd-hero--band {
+  aspect-ratio: 21 / 9;
+  max-height: 22vh;
+  border-radius: 14px;
+}
+.mkd-hero--muted {
+  filter: saturate(0.85) brightness(0.74);
+}
 .mkd-hero .hero-cap {
   position: absolute;
   left: 12px;
@@ -1117,6 +1125,16 @@
 .mkd-cta-grid > .mkd-btn {
   min-height: 54px;
   font-size: 14px;
+}
+/* Two-up stays two-up at every width (specificity beats the 520px rule). */
+.mkd-cta-grid.mkd-cta-grid--two {
+  grid-template-columns: repeat(2, 1fr);
+}
+.mkd-btn.mkd-btn--tall {
+  min-height: 68px;
+  font-size: clamp(18px, 5.6vw, 22px);
+  letter-spacing: 0.2em;
+  text-indent: 0.2em;
 }
 
 .mkd-footrow {

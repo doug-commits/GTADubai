@@ -67,6 +67,7 @@ const SKY_VERT = /* glsl */ `
 
 const SKY_FRAG = /* glsl */ `
   precision highp float;
+          precision highp sampler2D;
   in vec3 vDir;
   out vec4 outColor;
   uniform vec3 uSunDir;

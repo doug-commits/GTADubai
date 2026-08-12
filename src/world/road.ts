@@ -56,6 +56,7 @@ const ROAD_VERT = /* glsl */ `
 
 const ROAD_FRAG = /* glsl */ `
   precision highp float;
+          precision highp sampler2D;
   in vec2 vUv;      // x = lateral metres, y = along metres
   in float vEdge;   // 0 on the carriageway, 1 out on the verge
   in vec3 vWorld;
