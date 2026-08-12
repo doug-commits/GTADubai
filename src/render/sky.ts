@@ -12,8 +12,18 @@ import * as THREE from 'three';
  * If present it is blended over the analytic sky at boot; see `Sky.tryLoadAsset`.
  */
 
-/** Sun sits low and slightly to the north-east, behind the Trade Centre skyline. */
-export const SUN_DIR = new THREE.Vector3(0.36, 0.085, -0.93).normalize();
+/**
+ * Sun sits low and slightly to the north-east, behind the Trade Centre skyline.
+ *
+ * Elevation is a shadow-budget decision as much as an art one. At the original
+ * 4.9 degrees a shadow runs about twelve times its caster's height, so the
+ * towers that should shade the visible road stand more than a kilometre
+ * up-sun — outside any shadow frustum we can afford at this resolution, which
+ * is why the road came back fully lit. At ~11.5 degrees shadows are roughly
+ * five times caster height, which fits a 2048 map over the visible range and
+ * still reads as golden hour.
+ */
+export const SUN_DIR = new THREE.Vector3(0.36, 0.205, -0.93).normalize();
 
 export const SKY_GLSL = /* glsl */ `
   const vec3 SKY_ZENITH  = vec3(0.030, 0.038, 0.078);
