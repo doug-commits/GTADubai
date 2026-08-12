@@ -6,6 +6,9 @@ hits zero — and walk away with a table booking and a discount code.
 
 It is a game. It is also an ad.
 
+**You drive it from the driver's seat.** FPV is the default and the whole scene is framed for
+it; a behind-the-car chase view is on the title screen for anyone who prefers it.
+
 ```sh
 npm install
 npm run dev        # http://127.0.0.1:5173
@@ -38,6 +41,7 @@ src/
     path.ts           Arc-length centreline; everything is addressed as (s, t)
     corridor.ts       Loads the OSM bake, falls back to the authored placeholder
     road.ts           Road ribbon + wet-asphalt shader
+    desert.ts         The sand the city stands on — one plane, one draw call
     city.ts           Whole skyline as one InstancedMesh
     storefront.ts     The Love Mukbang branch at the finish
   render/
@@ -46,17 +50,34 @@ src/
   game/
     game.ts           Phase machine, fixed-timestep sim, scoring
     car.ts            Arcade handling
-    traffic.ts        Pooled rush-hour traffic, 4 draw calls
-    cameras.ts        Both camera rigs under evaluation
+    cockpit.ts        The driver's-eye interior, for FPV
+    traffic.ts        Pooled rush-hour traffic in formations, 5 draw calls
+    cameras.ts        FPV (default), chase, and the retained top-down rig
   audio/engine.ts     Synthesised engine, wind, skid, impacts
   net/                Voucher endpoint + per-branch leaderboard
   ui/                 Title, HUD, arrival, voucher, leaderboard
 ```
 
 **Everything moving is addressed as `(s, t)`** — metres along the corridor centreline, and
-metres laterally from it. Traffic AI, lane logic, collision, checkpoints and both cameras all
+metres laterally from it. Traffic AI, lane logic, collision, checkpoints and every camera all
 reason in that straight 1-D corridor and only touch world space to render. It is the single
 decision that keeps the rest of the code small.
+
+## How the run plays
+
+Traffic is issued in **formations**, not scattered. A wall with one gap, a diagonal stagger, a
+pair, a single — then clear road, then the next one. That rhythm is the game: read the shape,
+pick a line, take the reward on the way out.
+
+Two rules make it fair and make it worth doing:
+
+- **One lane is always open.** A through-line is reserved in every formation and drifts by at
+  most one lane per gap — and only across gaps long enough for the car to physically make the
+  move. Without it, two independently-placed packs can land close enough to merge into a solid
+  five-lane wall, which is not difficulty, it is an unavoidable crash.
+- **Near misses pay in seconds.** The clock is the only thing that can end a run, so the
+  reward for shaving a car is time on it, scaled by the combo. Risk buys time buys distance
+  buys more formations to risk. A good player is fast because they are brave.
 
 ## Performance
 
@@ -113,9 +134,23 @@ frame-time and draw-call data:
 
 ```sh
 npm run build && npm run preview &
-node tools/critic/shoot.mjs --mode=chase --label=r1
-node tools/critic/shoot.mjs --mode=topdown --label=r1-td
+node tools/critic/shoot.mjs --mode=fpv --label=r1
+node tools/critic/shoot.mjs --mode=chase --label=r1-chase
 ```
+
+Traffic is the one system a screenshot cannot judge — any single frame is either inside a
+formation or inside a gap, and both are correct. `traffic-probe.mjs` reads the live layout
+ahead of the player instead, and prints the clustering:
+
+```sh
+node tools/critic/traffic-probe.mjs
+#  sample 0: 18 ahead · 7 packs · size 1-7 · gaps 23-124m
+#            189m[...##] 228m[.#...] 346m[..##.] 442m[..#..] 566m[#....] 611m[#.###]
+```
+
+Each `[.....]` is the five lanes at that distance. It is how the merged-wall bug — two packs
+landing close enough to fill every lane at once — was found and how the through-line guarantee
+is verified.
 
 A separate critic reviews only those pixels — never a description of the work — names the
 single largest gap against the quality bar, and that one gap is what gets fixed next round.

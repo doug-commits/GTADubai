@@ -448,9 +448,13 @@ body {
   display: block;
   line-height: 0.86;
 }
+/* MUKBANG is seven caps at weight 900, which is the widest line in the product.
+   At 16vw it overran a 390 px phone and the final G was cut off by the viewport
+   — on the title screen, on the first frame anyone ever sees. Sized off the
+   longest word rather than off the nicest-looking one. */
 .mkd-title .title-word {
   display: block;
-  font-size: clamp(42px, 16vw, 74px);
+  font-size: clamp(36px, 12.6vw, 66px);
   font-weight: 900;
   letter-spacing: -0.02em;
   background: linear-gradient(180deg, var(--cream) 0%, var(--gold-soft) 42%, var(--ember-hot) 100%);
@@ -461,7 +465,7 @@ body {
   filter: drop-shadow(0 6px 26px rgba(226, 87, 30, 0.45));
 }
 .mkd-title .title-word--2 {
-  font-size: clamp(38px, 14.4vw, 66px);
+  font-size: clamp(34px, 11.6vw, 60px);
   letter-spacing: 0.06em;
 }
 /* Heat shimmer: a warm bloom that breathes behind the wordmark. */

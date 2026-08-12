@@ -243,16 +243,20 @@ function landmarkBoxes(
 /**
  * Height profile along the corridor. Peaks at Downtown and Trade Centre, dips
  * through the Al Quoz industrial stretch — the real corridor's density curve.
+ *
+ * The tail matters more than the mean. Sheikh Zayed Road is not an even wall of
+ * mid-rise; it is a line of individually tall, individually slender towers with
+ * long low gaps between them, and the gaps are as much of the read as the
+ * towers. A heavier tail and a lower base is what produces that.
  */
 function heightAt(u: number, rnd: () => number): number {
   const downtown = Math.exp(-Math.pow((u - 0.82) * 4.4, 2));
   const tradeCentre = Math.exp(-Math.pow((u - 0.97) * 9.0, 2));
   const barsha = Math.exp(-Math.pow((u - 0.05) * 8.0, 2));
   const density = 0.14 + downtown * 0.95 + tradeCentre * 0.7 + barsha * 0.35;
-  const base = 14 + density * 90;
-  // Heavy tail: most blocks are low, a few spike. Uniform heights read fake.
-  const spike = Math.pow(rnd(), 3.2) * density * 220;
-  return base + spike + rnd() * 18;
+  const base = 10 + density * 62;
+  const spike = Math.pow(rnd(), 3.4) * density * 340;
+  return base + spike + rnd() * 14;
 }
 
 export class City {
@@ -286,19 +290,40 @@ export class City {
     } else {
       // --- procedural infill ---------------------------------------------
       // Only used with the placeholder corridor; the OSM bake replaces this.
+      //
+      // Three bands per side, because that is how this road is actually built
+      // and because a single band of boxes at a single setback is what made the
+      // old skyline a canyon:
+      //
+      //   0  service-road frontage — low, wide, close in. Showrooms, mosques,
+      //      petrol stations, two-storey retail. Keeps the near ground occupied
+      //      so the eye is not looking straight from the barrier to a tower.
+      //   1  the tower line — tall, SLENDER, and well set back behind the
+      //      service road, with real gaps of sky between the plots.
+      //   2  the second rank behind, shorter and hazier.
+      //
+      // The gap rate on band 1 is high on purpose. Sky between the towers is
+      // not an absence of city; on this road it is the city.
       const path = corridor.path;
-      const STEP = 30;
+      const STEP = 44;
+      const BANDS = [
+        { off: 34, spread: 10, gap: 0.30, hScale: 0.10, wMin: 22, wVar: 30, dMin: 16, dVar: 20 },
+        { off: 76, spread: 34, gap: 0.42, hScale: 1.00, wMin: 13, wVar: 20, dMin: 13, dVar: 18 },
+        { off: 168, spread: 66, gap: 0.34, hScale: 0.58, wMin: 15, wVar: 26, dMin: 15, dVar: 22 },
+      ];
       for (let s = 0; s < path.length; s += STEP) {
         const u = s / path.length;
         for (const side of [-1, 1]) {
-          if (rnd() < 0.22) continue; // gaps: side roads, plots, interchanges
-          const rows = rnd() < 0.42 ? 2 : 1;
-          for (let row = 0; row < rows; row++) {
-            const off = (48 + row * 74 + rnd() * 46) * side;
-            const p = path.sample(s + (rnd() - 0.5) * STEP);
-            const h = heightAt(u, rnd) * (row === 0 ? 1 : 0.62);
-            const w = 16 + rnd() * 30;
-            const d = 16 + rnd() * 26;
+          for (const band of BANDS) {
+            if (rnd() < band.gap) continue;
+            const off = (band.off + rnd() * band.spread) * side;
+            const p = path.sample(s + (rnd() - 0.5) * STEP * 1.4);
+            const h = Math.max(7, heightAt(u, rnd) * band.hScale);
+            const w = band.wMin + rnd() * band.wVar;
+            // Slender: a tall Dubai tower is a point block or a thin slab, so
+            // depth tracks width instead of being drawn independently. Boxes as
+            // deep as they are wide read as office blocks, not as towers.
+            const d = band.dMin + rnd() * band.dVar;
             boxes.push({
               x: p.x + p.nx * off,
               y: h / 2,
@@ -306,7 +331,7 @@ export class City {
               w,
               h,
               d,
-              rot: p.heading + (rnd() - 0.5) * 0.28,
+              rot: p.heading + (rnd() - 0.5) * 0.22,
               seed: rnd() * 1000,
               kind: 0,
             });

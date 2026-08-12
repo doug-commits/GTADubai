@@ -25,19 +25,39 @@ import * as THREE from 'three';
  */
 export const SUN_DIR = new THREE.Vector3(0.36, 0.205, -0.93).normalize();
 
+/**
+ * DUBAI DUSK, not generic dusk.
+ *
+ * The single thing that makes a Gulf sky unmistakable is DUST. There is always
+ * a suspended sand load in the air over the city, and at low sun it does three
+ * things no ordinary sunset does:
+ *
+ *  - The horizon band goes pale and MILKY rather than deepening. Distant towers
+ *    do not silhouette black against a bright sky; they wash out toward the
+ *    haze colour and disappear into it. That wash is the whole read.
+ *  - The band is deep. It reaches well above the skyline, so a 300 m tower is
+ *    half dissolved while its podium is gone entirely.
+ *  - The zenith stays a dusty blue-violet. It never gets to the near-black
+ *    navy of a clear-air sunset, because the dust is scattering light back down
+ *    across the whole dome.
+ *
+ * The previous palette had a black zenith, a maroon mid-band and a thin brown
+ * haze — a clear, cold, high-latitude sunset. Correct for a lot of cities, and
+ * the reason this corridor could have been anywhere.
+ */
 export const SKY_GLSL = /* glsl */ `
-  const vec3 SKY_ZENITH  = vec3(0.030, 0.038, 0.078);
-  const vec3 SKY_MID     = vec3(0.180, 0.108, 0.132);
-  const vec3 SKY_HORIZON = vec3(0.760, 0.290, 0.110);
-  const vec3 SKY_EMBER   = vec3(1.320, 0.520, 0.150);
-  const vec3 SKY_HAZE    = vec3(0.420, 0.210, 0.180);
+  const vec3 SKY_ZENITH  = vec3(0.052, 0.076, 0.146);  // dusty blue-violet, never black
+  const vec3 SKY_MID     = vec3(0.330, 0.238, 0.288);  // mauve, where dust meets sky
+  const vec3 SKY_HORIZON = vec3(1.020, 0.560, 0.268);  // apricot
+  const vec3 SKY_EMBER   = vec3(1.640, 0.840, 0.360);  // the sun itself
+  const vec3 SKY_HAZE    = vec3(0.780, 0.545, 0.395);  // suspended sand — the signature
 
   // dir must be normalised. Returns linear HDR radiance.
   vec3 skyRadiance(vec3 dir, vec3 sunDir) {
     float h = clamp(dir.y, -1.0, 1.0);
 
-    // Two-stage vertical ramp: a fast ember falloff near the horizon and a slow
-    // fade into the char zenith. A single mix() reads flat and fake here.
+    // Two-stage vertical ramp: a fast falloff near the horizon and a slow fade
+    // into the zenith. A single mix() reads flat and fake here.
     float t1 = pow(clamp(1.0 - h, 0.0, 1.0), 6.0);
     float t2 = pow(clamp(1.0 - h, 0.0, 1.0), 1.7);
     vec3 col = mix(SKY_ZENITH, SKY_MID, t2);
@@ -53,11 +73,18 @@ export const SKY_GLSL = /* glsl */ `
     col += SKY_EMBER * 3.2 * pow(max(cosSun, 0.0), 900.0);
     col += SKY_EMBER * 0.55 * pow(max(cosSun, 0.0), 26.0);
 
-    // Ground haze band so the skyline base dissolves rather than cutting off.
-    col = mix(col, SKY_HAZE, smoothstep(0.06, -0.10, h) * 0.75);
+    // Dust band. Deep — it reaches to about 14 degrees of elevation, which at
+    // this corridor's sightlines is roughly the top of a 300 m tower a kilometre
+    // out. It also brightens toward the sun, because that is where the forward
+    // scatter through the dust is strongest, and that asymmetry is what stops it
+    // reading as a flat grey wash laid over the bottom of the frame.
+    float dust = smoothstep(0.25, -0.06, h);
+    vec3  dustCol = SKY_HAZE * (0.80 + 0.85 * pow(sunAmt, 2.2));
+    col = mix(col, dustCol, dust * 0.80);
 
-    // Below the horizon: dark warm ground bounce.
-    col = mix(col, vec3(0.045, 0.028, 0.026), smoothstep(-0.02, -0.22, h));
+    // Below the horizon: sand bounce. Warm and far from black — this is desert
+    // under a low sun, and it is what fills the gaps between the towers.
+    col = mix(col, vec3(0.230, 0.150, 0.098), smoothstep(-0.02, -0.24, h));
     return col;
   }
 `;

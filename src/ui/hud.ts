@@ -140,7 +140,8 @@ export function createHud(host: UiHost): HudView {
   const comboInner = el('div', 'combo-inner');
   const comboN = el('div', 'combo-n tnum', 'x2');
   comboInner.appendChild(comboN);
-  comboInner.appendChild(el('em', undefined, 'Near miss'));
+  const comboLabel = el('em', undefined, 'Near miss');
+  comboInner.appendChild(comboLabel);
   combo.appendChild(comboInner);
   shell.appendChild(combo);
 
@@ -195,6 +196,7 @@ export function createHud(host: UiHost): HudView {
   let lastKph = -1;
   let lastSpeedQ = -1;
   let comboLive = false;
+  let lastComboBonus = '';
   let lastComboN = -1;
   let crashTimer = 0;
   let crashed = false;
@@ -416,6 +418,16 @@ export function createHud(host: UiHost): HudView {
         lastComboN = n;
         comboN.textContent = 'x' + n;
       }
+      // Show the SECONDS, not just the multiplier. A near miss now pays the one
+      // currency that can end the run, and the player has to be told that in the
+      // moment it happens or they will never connect the two.
+      if (t.nearMissBonus > 0) {
+        const s = '+' + t.nearMissBonus.toFixed(1) + 's';
+        if (s !== lastComboBonus) {
+          lastComboBonus = s;
+          comboLabel.textContent = s;
+        }
+      }
       if (!comboLive) {
         comboLive = true;
         combo.classList.add('is-live');
@@ -424,6 +436,8 @@ export function createHud(host: UiHost): HudView {
       swap(comboInner, 'punch-a', 'punch-b', flipPunch);
     } else if (comboLive && t.comboAge > COMBO_HOLD) {
       comboLive = false;
+      lastComboBonus = '';
+      comboLabel.textContent = 'Near miss';
       combo.classList.remove('is-live');
     }
 

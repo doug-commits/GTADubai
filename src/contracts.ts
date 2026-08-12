@@ -6,7 +6,7 @@
 
 export type Phase = 'boot' | 'title' | 'countdown' | 'running' | 'arrived' | 'failed';
 
-export type CameraMode = 'chase' | 'topdown';
+export type CameraMode = 'fpv' | 'chase' | 'topdown';
 
 /** The five Love Mukbang branches. Leaderboards are per-branch. */
 export const BRANCHES = [
@@ -43,6 +43,8 @@ export interface Telemetry {
   crashed: boolean;
   /** Set for one frame on a near miss. */
   nearMiss: boolean;
+  /** Seconds the last near miss put back on the clock. Set for one frame. */
+  nearMissBonus: number;
 }
 
 /** Final result handed to the win screen. */

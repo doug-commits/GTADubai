@@ -226,19 +226,30 @@ export const FACADE_FRAG = /* glsl */ `
     }
     f.recess *= clamp(uParallax, 0.0, 2.0);
 
-    // Dubai glazing runs blue-green, neutral grey or bronze. Albedo is near
-    // black on purpose — glass has almost no diffuse; everything you see in it
-    // is reflection or transmitted room light.
+    // Dubai glazing runs blue-green, neutral grey, bronze — and, more than any
+    // other city, GOLD. Albedo stays near black on purpose: glass has almost no
+    // diffuse, and everything you see in it is reflection or room light.
     float g = hash11(seed * 5.77 + 41.3);
     vec3 blueGreen = vec3(0.010, 0.019, 0.030);
     vec3 neutral   = vec3(0.017, 0.017, 0.019);
     vec3 bronze    = vec3(0.028, 0.019, 0.011);
-    f.glassTint = mix(blueGreen, neutral, smoothstep(0.30, 0.62, g));
-    f.glassTint = mix(f.glassTint, bronze, smoothstep(0.72, 0.96, g));
+    vec3 gold      = vec3(0.044, 0.030, 0.010);
+    f.glassTint = mix(blueGreen, neutral, smoothstep(0.26, 0.54, g));
+    f.glassTint = mix(f.glassTint, bronze, smoothstep(0.62, 0.80, g));
+    f.glassTint = mix(f.glassTint, gold,   smoothstep(0.82, 0.97, g));
 
-    f.panelCol   = mix(vec3(0.030, 0.031, 0.035), vec3(0.085, 0.078, 0.070), hash11(seed * 7.3 + 3.9));
+    // CLADDING IS PALE. This is the other half of why the corridor was reading
+    // as a generic downtown: every solid surface on it was charcoal, at 3-8 %
+    // albedo, which is a wet northern city of dark brick and dark curtain wall.
+    // What actually lines this road is white and off-white GRC, painted
+    // aluminium, and limestone and sand-toned precast — 30-55 % albedo, bright
+    // enough that the low sun makes the west face of every tower glow. A dark
+    // tower and a pale tower under the same sun are not a grading difference;
+    // they are different cities.
+    f.panelCol   = mix(vec3(0.255, 0.248, 0.238), vec3(0.470, 0.452, 0.420), hash11(seed * 7.3 + 3.9));
     f.panelRough = mix(0.16, 0.55, hash11(seed * 11.1 + 9.4));
-    f.stoneCol   = mix(vec3(0.100, 0.090, 0.075), vec3(0.170, 0.152, 0.126), hash11(seed * 13.7 + 17.2));
+    // Limestone through to warm sand precast.
+    f.stoneCol   = mix(vec3(0.360, 0.330, 0.275), vec3(0.560, 0.505, 0.408), hash11(seed * 13.7 + 17.2));
 
     // Office towers at dusk are mostly still lit and mostly cool-white.
     // Residential is patchier and much warmer.
@@ -595,7 +606,10 @@ export const FACADE_FRAG = /* glsl */ `
       float parapet = 1.0 - smoothstep(0.5, 1.1, edge);
 
       float grain = vnoise(rp * 0.85) * 0.6 + vnoise(rp * 3.1) * 0.4;
-      albedo = mix(vec3(0.050, 0.047, 0.044), vec3(0.090, 0.084, 0.077), grain);
+      // Pale sand-dusted screed. Roofs are seen from above only by the metro
+      // viaduct and the tall-tower sightlines, but they set the value of every
+      // setback and podium top the player drives past.
+      albedo = mix(vec3(0.150, 0.142, 0.130), vec3(0.245, 0.230, 0.208), grain);
       roughness = 0.92;
 
       // Chillers and AHUs as a hashed block grid. Cheap, and from street level
@@ -692,8 +706,9 @@ export const FACADE_FRAG = /* glsl */ `
       solidMet = mix(solidMet, 0.0, mats.y);
       solidRgh = mix(solidRgh, 0.88, mats.y);
 
-      // Louvred plant screens at the crown and the mechanical floors.
-      solidAlb = mix(solidAlb, vec3(0.075, 0.074, 0.072), mats.z);
+      // Louvred plant screens at the crown and the mechanical floors. These stay
+      // dark against the pale cladding — the contrast is what draws the crown.
+      solidAlb = mix(solidAlb, vec3(0.088, 0.086, 0.082), mats.z);
       solidMet = mix(solidMet, 0.60, mats.z);
       solidRgh = mix(solidRgh, 0.42, mats.z);
 

@@ -25,10 +25,13 @@ const CAR_VERT = /* glsl */ `
   in vec3 position;
   in vec3 normal;
   uniform mat4 modelViewMatrix, projectionMatrix, modelMatrix;
-  out vec3 vN; out vec3 vW;
+  out vec3 vN; out vec3 vW; out vec3 vL;
   void main() {
     vec4 wp = modelMatrix * vec4(position, 1.0);
     vW = wp.xyz;
+    // Car-local metres. The bonnet panel work needs to know where on the car it
+    // is standing, and only the local frame survives the car turning.
+    vL = position;
     vN = normalize(mat3(modelMatrix) * normal);
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
@@ -70,6 +73,8 @@ export class Car {
   private extraMats: THREE.RawShaderMaterial[] = [];
   private tailMat: THREE.RawShaderMaterial | null = null;
   private beam: THREE.InstancedMesh;
+  /** Windscreen and side glass. Hidden when the camera sits behind it. */
+  private glass: THREE.Mesh | null = null;
 
   constructor() {
     this.bodyMat = new THREE.RawShaderMaterial({
@@ -77,34 +82,87 @@ export class Car {
       glslVersion: THREE.GLSL3,
       uniforms: {
         ...vehicleUniforms(),
-        uColor: { value: new THREE.Color(0.42, 0.030, 0.012) }, // ember red basecoat
+        uColor: { value: new THREE.Color(0.54, 0.036, 0.014) }, // ember red basecoat
       },
       vertexShader: CAR_VERT,
       fragmentShader: /* glsl */ `
         precision highp float;
         precision highp int;
         precision highp sampler2D;
-        in vec3 vN; in vec3 vW;
+        in vec3 vN; in vec3 vW; in vec3 vL;
         out vec4 outColor;
         uniform vec3 uCameraPos, uSunDir, uColor;
         uniform float uFogNear, uFogFar;
         ${SKY_GLSL}
         ${PBR_GLSL}
         ${SKY_IBL_GLSL}
+
+        /**
+         * Bonnet panel work.
+         *
+         * From the driver's seat the bonnet is the single largest object in the
+         * frame, and a car bonnet at dusk is physically a mirror aimed at the
+         * brightest band of the sky — so it arrives as one flat bright plate
+         * with no information in it at all. Panel lines are what make it read as
+         * a car rather than as a lens flare: the shut lines where the bonnet
+         * meets the wings, and the centre power crease down the middle.
+         *
+         * Returns a normal perturbation in local space and a darkening factor.
+         */
+        void bonnetPanels(vec3 L, inout vec3 N, out float shade) {
+          shade = 1.0;
+          // Bonnet only: forward of the screen base, above the shoulder line.
+          float onBonnet = smoothstep(-0.42, -0.60, L.z) * smoothstep(0.60, 0.74, L.y);
+          if (onBonnet < 0.01) return;
+
+          // Shut lines: two longitudinal gaps where the panel meets the wings,
+          // plus the transverse gap at the leading edge.
+          float shutX = min(abs(abs(L.x) - 0.585), abs(abs(L.x) - 0.0));
+          float lineX = 1.0 - smoothstep(0.006, 0.022, abs(abs(L.x) - 0.585));
+          float lineZ = 1.0 - smoothstep(0.008, 0.026, abs(L.z + 1.93));
+
+          // Centre power crease: a shallow ridge, not a cut.
+          float crease = exp(-pow(L.x / 0.115, 2.0));
+
+          float cut = max(lineX, lineZ) * onBonnet;
+          shade = 1.0 - cut * 0.72;
+
+          // Tilt the surface away from each shut line and up over the crease.
+          N.x += sign(L.x) * lineX * onBonnet * 0.55;
+          N.z += sign(L.z + 1.93) * lineZ * onBonnet * 0.55;
+          N.y += crease * onBonnet * 0.10;
+          N.x -= sign(L.x) * crease * onBonnet * 0.16;
+          N = normalize(N);
+        }
+
         void main() {
           vec3 N = normalize(vN);
           vec3 V = normalize(vW - uCameraPos);
 
-          // Metallic basecoat under a clearcoat. The two-lobe response is what
-          // separates automotive paint from coloured plastic: a broad soft
-          // sheen from the flake, and a tight hard reflection from the lacquer.
-          Surface s = makeSurface(uColor, 0.75, filterRoughness(N, 0.26), N, V);
-          s.clearcoat = 1.0;
-          s.clearcoatRoughness = 0.055;
+          float panelShade;
+          bonnetPanels(vL, N, panelShade);
+
+          // SATIN WRAP, not gloss lacquer — and the reason is the camera.
+          //
+          // Gloss paint is a mirror, and from the driver's seat the bonnet is a
+          // near-horizontal mirror filling the bottom fifth of the frame. At
+          // grazing incidence its Fresnel term goes to one, so whatever the
+          // basecoat is underneath, what the player sees is the brightest band
+          // of the sky reflected at full strength: a red car rendering as a
+          // white plate, and the single brightest object in the game sitting
+          // directly under the part of the screen they need to read.
+          //
+          // A satin wrap solves it at the surface rather than in the grade. It
+          // is also the most common finish on this road by a distance, so the
+          // physically-motivated fix and the locally-accurate one agree.
+          Surface s = makeSurface(uColor * panelShade, 0.18, filterRoughness(N, 0.46), N, V);
+          s.clearcoat = 0.30;
+          s.clearcoatRoughness = 0.24;
 
           vec3 R = reflect(V, N);
           vec3 col = shadeIBL(s, skyIrradiance(N, uSunDir), skyPrefiltered(R, s.roughness, uSunDir));
           col += shadeDirect(s, uSunDir, vec3(3.4, 1.5, 0.55));
+          col *= panelShade;
 
           float fog = smoothstep(uFogNear, uFogFar, length(vW - uCameraPos));
           col = mix(col, skyRadiance(normalize(vec3(V.x, 0.03, V.z)), uSunDir), fog);
@@ -130,7 +188,8 @@ export class Car {
     const trimMat = this.makeTrimMaterial();
 
     this.group.add(new THREE.Mesh(parts.body, this.bodyMat));
-    this.group.add(new THREE.Mesh(parts.glass, glassMat));
+    this.glass = new THREE.Mesh(parts.glass, glassMat);
+    this.group.add(this.glass);
     this.group.add(new THREE.Mesh(parts.trim, trimMat));
 
     // Tyres were flat 0x07060a — black rubber on black tarmac, so the wheels
@@ -356,6 +415,16 @@ export class Car {
     pool.renderOrder = 6;
     this.group.add(pool);
     return pool;
+  }
+
+  /**
+   * From the driver's seat the camera is behind the windscreen, and a tinted
+   * front-facing pane between the eye and the road turns the whole view murky.
+   * The rest of the shell stays — it is what casts the car's shadow, and the
+   * bonnet ahead of the screen is half the reason to sit here.
+   */
+  setInteriorMode(on: boolean) {
+    if (this.glass) this.glass.visible = !on;
   }
 
   reset() {

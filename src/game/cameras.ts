@@ -3,13 +3,14 @@ import type { CameraMode } from '../contracts';
 import type { Car } from './car';
 import type { CenterlinePath, PathSample } from '../world/path';
 import { MAX_SPEED } from './car';
+import { DRIVER_X, EYE_Y, EYE_Z } from './cockpit';
 
 /**
- * The two camera rigs under evaluation.
+ * The camera rigs.
  *
- * Both drive the same perspective camera and the same world; only the framing
- * differs, so a side-by-side judgement is genuinely about which one looks and
- * plays better rather than which one got more engineering attention.
+ * All of them drive the same perspective camera and the same world; only the
+ * framing differs. FPV is what ships — see `FpvRig` — with the chase rig kept
+ * as the selectable alternative and the top-down rig kept for reference.
  */
 
 export interface CameraRig {
@@ -18,10 +19,151 @@ export interface CameraRig {
   update(dt: number, car: Car, path: CenterlinePath, sample: PathSample, camera: THREE.PerspectiveCamera): void;
   /** Screen-space point the radial motion blur radiates from, in 0..1 UV. */
   readonly focal: THREE.Vector2;
+  /** True when the camera sits inside the car, so the interior must be drawn. */
+  readonly interior?: boolean;
 }
 
 const _look = new THREE.Vector3();
 const _want = new THREE.Vector3();
+
+/**
+ * ===========================================================================
+ *  FPV — the driver's eye
+ * ===========================================================================
+ *
+ *  The shipping camera. Sitting in the seat solves three separate problems at
+ *  once, which is why it is the default:
+ *
+ *  1. The chase rig spent the bottom third of a portrait phone on empty road
+ *     directly behind the car, because the framing needed the car in shot and
+ *     the car sits above the ground. From the seat, that same third of the
+ *     screen is the bonnet, the dash and the wheel — the parts that say "car".
+ *  2. Speed at 250 km/h is a function of how close the nearest thing to the
+ *     lens is. Nothing is closer than your own dashboard.
+ *  3. Gaps in traffic are judged from the driver's line, not from twelve
+ *     metres back and four up. Threading a lane is a different, better read
+ *     when the eye is where the decision is actually made.
+ *
+ *  The rig reproduces the car's own transform (see `Car.syncTransform`) rather
+ *  than reading `car.group`, because the rig updates before the car's matrix
+ *  does and a frame of lag on a head-mounted camera is immediately visible as
+ *  swim.
+ */
+export class FpvRig implements CameraRig {
+  readonly mode = 'fpv' as const;
+  readonly focal = new THREE.Vector2(0.5, 0.5);
+  readonly interior = true;
+
+  private euler = new THREE.Euler(0, 0, 0, 'YXZ');
+  private quat = new THREE.Quaternion();
+  private offset = new THREE.Quaternion();
+  private eye = new THREE.Vector3();
+  /** Smoothed look-into-the-corner yaw, radians. */
+  private leadYaw = 0;
+  /** Smoothed head lean under lateral load, radians of roll. */
+  private lean = 0;
+  private bob = 0;
+  private seed = Math.random() * 100;
+
+  reset(car: Car, path: CenterlinePath) {
+    this.leadYaw = 0;
+    this.lean = 0;
+    this.bob = 0;
+    const p = path.sample(car.s);
+    this.eye.set(p.x, EYE_Y, p.z);
+  }
+
+  update(
+    dt: number,
+    car: Car,
+    path: CenterlinePath,
+    sample: PathSample,
+    camera: THREE.PerspectiveCamera,
+  ) {
+    const speed01 = THREE.MathUtils.clamp(car.speed / MAX_SPEED, 0, 1.3);
+
+    // --- eye position -------------------------------------------------------
+    // Same transform the car body gets, evaluated here so the head is locked to
+    // the shell to the millimetre.
+    this.euler.set(car.pitch, sample.heading + car.yaw, car.roll);
+    this.quat.setFromEuler(this.euler);
+
+    // Head bob: a shallow vertical oscillation whose rate follows road speed.
+    // It is the difference between "a camera moving forward" and "a person in
+    // a seat", and it costs one sine.
+    this.bob += dt * (2.6 + speed01 * 7.0);
+    const bobY = Math.sin(this.bob) * (0.006 + speed01 * 0.010);
+
+    this.eye.set(DRIVER_X, EYE_Y + bobY, EYE_Z).applyQuaternion(this.quat);
+    this.eye.x += sample.x + sample.nx * car.t;
+    this.eye.z += sample.z + sample.nz * car.t;
+    camera.position.copy(this.eye);
+
+    // --- where the driver is looking ---------------------------------------
+    // Eyes go where the car is going, not where the nose is pointing. Take the
+    // heading of the corridor a few seconds ahead and rotate part of the way
+    // toward it; on a straight this is zero and on a bend it is what keeps the
+    // road in frame instead of sliding off the edge.
+    const leadDist = 70 + speed01 * 130;
+    const ahead = path.sample(Math.min(path.length, car.s + leadDist));
+    let dh = ahead.heading - sample.heading;
+    while (dh > Math.PI) dh -= Math.PI * 2;
+    while (dh < -Math.PI) dh += Math.PI * 2;
+    // Counter the car's own slide as well: in a drift the nose is not pointing
+    // down the road, and the driver's head is still looking down the road.
+    const want = dh * 0.62 - car.yaw * 0.55;
+    this.leadYaw += (want - this.leadYaw) * (1 - Math.exp(-dt * 5.0));
+
+    // Lateral load pushes the head over. Small, and against the turn.
+    const wantLean = THREE.MathUtils.clamp(car.vt * 0.010, -0.09, 0.09);
+    this.lean += (wantLean - this.lean) * (1 - Math.exp(-dt * 6.0));
+
+    // Pitch. Slightly nose-up, which sounds wrong for a driving game and is
+    // not: the dash and the bonnet occupy fixed elevations below the horizon,
+    // so every degree of downward pitch is a degree of interior added to the
+    // bottom of a portrait frame. Lifting the lens is how the car keeps its
+    // share of the screen to the ~28 % that reads as "in a car" rather than
+    // "behind a dashboard". It settles back toward level with speed, which
+    // drops the horizon and puts the road under the player at 300 km/h.
+    const pitch = 0.050 - speed01 * 0.020 - car.pitch * 0.5;
+
+    // --- vibration ----------------------------------------------------------
+    // High-frequency, low-amplitude, and scaled by speed and slip. This is the
+    // single strongest cue that the seat is attached to an engine.
+    const t = performance.now() * 0.001 + this.seed;
+    const amp = 0.0016 + speed01 * 0.0042 + car.slip * 0.010;
+    const vibX = Math.sin(t * 51.7) * amp + Math.sin(t * 23.1) * amp * 0.5;
+    const vibY = Math.sin(t * 43.3) * amp * 0.8;
+    const vibZ = Math.sin(t * 37.9) * amp * 1.3;
+
+    this.euler.set(pitch + vibX, this.leadYaw + vibY, this.lean + vibZ - car.roll * 0.30);
+    this.offset.setFromEuler(this.euler);
+    camera.quaternion.copy(this.quat).multiply(this.offset);
+
+    // --- lens ---------------------------------------------------------------
+    // FOV is speed-scaled, and it is also what decides how much of the screen
+    // the car itself owns — which is not obvious and is worth spelling out.
+    //
+    // The bonnet and the dash sit at fixed elevations below the eye. Screen
+    // position goes as tan(elevation) / tan(halfFov), so widening the lens does
+    // not merely add periphery: it drags every one of those fixed elevations
+    // toward the centre of the frame. At the 96 degrees this started on, a
+    // portrait phone was giving 40 % of its screen to bodywork. Pulled back to
+    // 58, the same car sits in the bottom quarter with nothing else moved.
+    camera.fov = 58 + speed01 * 22;
+    // The near plane has to clear the wheel rim, which is ~0.25 m from the eye.
+    camera.near = 0.12;
+    // Matched to the other rigs. Pushing it out to 5.2 km bought nothing — the
+    // dust band has everything past about 2.5 km fully dissolved into the sky —
+    // and cost draw calls, because the metro viaduct and the signage stream in
+    // frustum-culled chunks and a longer frustum simply admits more of them.
+    camera.far = 4200;
+    camera.updateProjectionMatrix();
+
+    // The vanishing point is wherever the driver is looking.
+    this.focal.set(0.5 - this.leadYaw * 0.30, 0.50);
+  }
+}
 
 /**
  * Behind-the-car chase rig.
@@ -175,5 +317,7 @@ export class TopDownRig implements CameraRig {
 }
 
 export function makeRig(mode: CameraMode): CameraRig {
-  return mode === 'chase' ? new ChaseRig() : new TopDownRig();
+  if (mode === 'chase') return new ChaseRig();
+  if (mode === 'topdown') return new TopDownRig();
+  return new FpvRig();
 }

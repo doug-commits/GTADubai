@@ -206,12 +206,26 @@ const COMPOSITE_FRAG = /* glsl */ `${COMMON}
     vec2 toCenter = uv - uFocal;
     float rad = length(toCenter);
 
+    // --- depth, reconstructed once -----------------------------------------
+    // Needed by the shadow and AO terms below, but read up here because the
+    // motion blur needs it too: see the near gate.
+    float sceneDepth = textureLod(tDepth, uv, 0.0).r;
+    vec4 clip = vec4(uv * 2.0 - 1.0, sceneDepth * 2.0 - 1.0, 1.0);
+    vec4 vp = uInvProj * clip;
+    vec3 viewPos = vp.xyz / vp.w;
+
     // --- radial motion blur ------------------------------------------------
     // Strength ramps with speed AND with distance from the vanishing point, so
-    // the road ahead stays readable while the periphery tears past. This is the
-    // primary velocity cue in the whole image — the ground plane streaking is
-    // what makes 280 km/h feel like 280 km/h, so it is deliberately strong.
-    float blurAmt = uSpeed01 * uSpeed01 * 0.19 * smoothstep(0.0, 0.55, rad);
+    // the road ahead stays readable while the periphery tears past.
+    //
+    // Two gates keep it honest. The radial one is obvious. The NEAR one is not,
+    // and matters more: this is a screen-space smear with no velocity buffer,
+    // so without it the effect cannot tell the world from the dashboard, and
+    // the interior of the car — which is bolted to the lens and has no screen
+    // velocity at all — gets torn apart exactly as hard as the scenery. Metres,
+    // not pixels, is the only thing that separates them.
+    float nearGate = smoothstep(0.8, 3.5, -viewPos.z);
+    float blurAmt = uSpeed01 * uSpeed01 * 0.125 * smoothstep(0.0, 0.55, rad) * nearGate;
     vec3 col = vec3(0.0);
     float wsum = 0.0;
     const int TAPS = 10;
@@ -235,13 +249,9 @@ const COMPOSITE_FRAG = /* glsl */ `${COMMON}
     col /= wsum;
 
     // --- deferred sun shadow + ambient occlusion ---------------------------
-    // Reconstruct the fragment from depth once, and use it for both terms.
+    // Both terms run off the depth reconstruction done above the blur.
     // Derivatives are taken here, in uniform control flow, because sampleShadow
     // builds a receiver-plane bias out of them.
-    float sceneDepth = textureLod(tDepth, uv, 0.0).r;
-    vec4 clip = vec4(uv * 2.0 - 1.0, sceneDepth * 2.0 - 1.0, 1.0);
-    vec4 vp = uInvProj * clip;
-    vec3 viewPos = vp.xyz / vp.w;
     vec4 wp = uInvViewProj * clip;
     vec3 worldPos = wp.xyz / wp.w;
     // Geometric normal from the depth buffer. Only the bias and the

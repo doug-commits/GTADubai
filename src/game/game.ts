@@ -3,6 +3,7 @@ import type { AudioEngine, CameraMode, Net, Phase, RunResult, Telemetry, Ui } fr
 import { loadCorridor, type Corridor } from '../world/corridor';
 import { Road, Barriers } from '../world/road';
 import { City, Landmarks } from '../world/city';
+import { Desert } from '../world/desert';
 import { MetroLine } from '../world/metro-line';
 import { Storefront, makeFinishGantry } from '../world/storefront';
 import { Sky, makeLights, SUN_DIR } from '../render/sky';
@@ -11,6 +12,7 @@ import { createShadowSystem, type ShadowSystem } from '../render/shadows';
 import { Car, MAX_SPEED } from './car';
 import { Traffic, type TrafficEvents } from './traffic';
 import { makeRig, type CameraRig } from './cameras';
+import { Cockpit } from './cockpit';
 import { Input } from '../core/input';
 import type { PathSample } from '../world/path';
 
@@ -42,10 +44,31 @@ const CHECKPOINT_COUNT = 6;
 const SIM_STEP = 1 / 120;
 const MAX_FRAME = 0.1;
 
-const NEAR_MISS_SCORE = 120;
+/**
+ * Scoring.
+ *
+ * Near misses were worth 120 a piece against 6 300 for simply covering the
+ * distance, so the optimal line was the safe one and the risk was decoration.
+ * A dodging game has to pay for dodging: at 340 x combo, a good run threading
+ * packs is worth several times a clean one, and the combo is what turns a
+ * sequence of individually small decisions into something you protect.
+ */
+const NEAR_MISS_SCORE = 340;
 const CHECKPOINT_SCORE = 750;
 const DISTANCE_SCORE_PER_M = 0.9;
 const TIME_BONUS_PER_S = 260;
+
+/**
+ * Seconds returned per near miss.
+ *
+ * This is the load-bearing rule of the whole design, and it did not exist
+ * before: the clock is the only thing that can end the run, so time has to be
+ * the reward for taking risk. Threading a wall now literally buys the seconds
+ * that let you reach the next one. It closes the loop — risk buys time buys
+ * distance buys more walls to risk — and it means a good player is fast because
+ * they are brave, not because they held a lane.
+ */
+const NEAR_MISS_SECONDS = 0.30;
 
 interface RaceCheckpoint {
   name: string;
@@ -66,10 +89,12 @@ export class Game {
   private road!: Road;
   private barriers!: Barriers;
   private city!: City;
+  private desert!: Desert;
   private landmarks!: Landmarks;
   private metroLine!: MetroLine;
   private storefront!: Storefront;
   private car = new Car();
+  private cockpit = new Cockpit();
   private traffic!: Traffic;
   private rig: CameraRig;
 
@@ -96,7 +121,7 @@ export class Game {
   };
   private trafficEvents: TrafficEvents = { nearMiss: 0, crash: false, crashSeverity: 1 };
   private raf = 0;
-  private cameraMode: CameraMode = 'chase';
+  private cameraMode: CameraMode = 'fpv';
 
   readonly telemetry: Telemetry = {
     phase: 'boot',
@@ -111,6 +136,7 @@ export class Game {
     checkpointBonus: 0,
     crashed: false,
     nearMiss: false,
+    nearMissBonus: 0,
   };
 
   constructor(
@@ -158,6 +184,17 @@ export class Game {
     this.scene.add(this.sky.mesh);
     for (const l of makeLights()) this.scene.add(l);
     this.scene.add(this.car.group);
+    // The interior rides with the shell, so it inherits body roll and pitch
+    // for free — the dash leaning under you in a corner is most of the feel.
+    this.car.group.add(this.cockpit.group);
+    this.applyCameraMode();
+  }
+
+  /** Show the interior only when the camera is actually inside the car. */
+  private applyCameraMode() {
+    const inside = this.rig.interior === true;
+    this.cockpit.setVisible(inside);
+    this.car.setInteriorMode(inside);
   }
 
   get attribution() {
@@ -174,6 +211,11 @@ export class Game {
     this.ui.setBootProgress(0.4);
 
     this.startS = Math.max(0, this.corridor.finishS - RACE_LENGTH);
+
+    // Ground first, so it is behind everything else in the opaque pass.
+    const mid = this.corridor.path.sample(this.corridor.finishS * 0.5);
+    this.desert = new Desert(new THREE.Vector3(mid.x, 0, mid.z));
+    this.scene.add(this.desert.mesh);
 
     this.road = new Road(this.corridor, { wetness: 0.8 });
     this.scene.add(this.road.mesh);
@@ -247,6 +289,7 @@ export class Game {
     this.cameraMode = m;
     this.rig = makeRig(m);
     this.rig.reset(this.car, this.corridor.path);
+    this.applyCameraMode();
   }
 
   getCameraMode() {
@@ -358,6 +401,7 @@ export class Game {
     const t = this.telemetry;
     t.crashed = false;
     t.nearMiss = false;
+    t.nearMissBonus = 0;
     t.checkpointBonus = 0;
 
     // --- boost --------------------------------------------------------------
@@ -390,18 +434,28 @@ export class Game {
     }
 
     if (this.trafficEvents.nearMiss > 0) {
-      this.nearMissCount += this.trafficEvents.nearMiss;
-      this.combo = Math.min(9, this.combo + this.trafficEvents.nearMiss);
+      const n = this.trafficEvents.nearMiss;
+      this.nearMissCount += n;
+      this.combo = Math.min(9, this.combo + n);
       this.comboTimer = 0;
-      this.score += NEAR_MISS_SCORE * this.combo * this.trafficEvents.nearMiss;
-      this.boost = Math.min(1, this.boost + 0.10 * this.trafficEvents.nearMiss);
+      this.score += NEAR_MISS_SCORE * this.combo * n;
+      // Boost and time both scale with the combo, so a whole pack threaded in
+      // one pass pays far better than the same cars taken one at a time.
+      this.boost = Math.min(1, this.boost + 0.13 * n);
+      const gained = NEAR_MISS_SECONDS * n * Math.min(3, this.combo);
+      this.timeLeft += gained;
+      t.nearMissBonus = gained;
       this.audio.nearMiss(this.combo);
+      this.post.flash = Math.max(this.post.flash, 0.05 + Math.min(0.14, this.combo * 0.02));
       t.nearMiss = true;
     }
 
-    // Combo decays if you stop threading traffic.
+    // Combo decays if you stop threading traffic. The window is long enough to
+    // span the clear road between two packs at speed — the combo is meant to
+    // survive from one formation to the next, because carrying it is the thing
+    // that makes the run feel like a run rather than a sequence of moments.
     this.comboTimer += dt;
-    if (this.comboTimer > 2.6 && this.combo > 1) {
+    if (this.comboTimer > 4.2 && this.combo > 1) {
       this.combo = 1;
       this.comboTimer = 99;
     }
@@ -573,6 +627,18 @@ export class Game {
     };
   }
 
+  /**
+   * Traffic layout ahead of the player, as (metres ahead, lane) pairs.
+   *
+   * The formation spawner is the one system whose output cannot be judged from
+   * a screenshot: a single captured frame is either inside a pack or inside a
+   * gap, and both are correct. This reports the actual distribution so the
+   * rhythm can be measured rather than guessed at.
+   */
+  debugTraffic() {
+    return this.traffic.debugLayout(this.car.s);
+  }
+
   /** Test hook: end the run immediately. Used by the critic harness. */
   forceFinish(won: boolean) {
     if (this.phase !== 'running' && this.phase !== 'countdown') return;
@@ -610,6 +676,7 @@ export class Game {
     this.car.syncTransform(this.corridor.path, this.sample, this.clock);
 
     this.sky.update(this.clock, this.camera.position);
+    this.desert.update(this.camera.position);
     this.road.update(this.clock, this.camera.position);
     this.barriers.update(this.camera.position);
     this.city.update(this.clock, this.camera.position);
@@ -618,14 +685,22 @@ export class Game {
     this.storefront.update(this.clock);
     this.traffic.setCameraUniforms(this.camera.position, this.clock);
     this.car.setCameraUniforms(this.camera.position, this.clock);
+    if (this.rig.interior) {
+      this.cockpit.update(dt, this.input.state.steer, this.car.rpm, this.clock, this.camera.position);
+    }
 
     // Post reacts to the drive.
     this.post.speed01 = speed01;
     this.post.focal.copy(this.rig.focal);
     this.post.shake = Math.max(0, this.post.shake - dt * 3.6);
     this.post.flash = Math.max(0, this.post.flash - dt * 2.4);
-    this.post.settings.bloom = 1.10 + speed01 * 0.30;
-    this.post.settings.exposure = 0.78 + (this.input.state.boost ? 0.05 : 0);
+    // Exposure came down with the sky. The dusk palette is now carrying a full
+    // dust band, which raises the average scene luminance a long way above the
+    // near-black sky it replaced — at the old 0.78 the road, the sand and the
+    // bonnet all sat on the shoulder of the tonemap curve together and the frame
+    // went milky. Bloom came down with it for the same reason.
+    this.post.settings.bloom = 0.86 + speed01 * 0.26;
+    this.post.settings.exposure = 0.60 + (this.input.state.boost ? 0.045 : 0);
 
     // Caster pass first: the composite reads the map the same frame, and
     // renderer.info is snapshotted inside post.render() AFTER this, so the

@@ -80,7 +80,7 @@ async function main() {
     __mukbang: {
       startRun: () => game.startRun(),
       restart: () => game.restart(),
-      setCameraMode: (m: 'chase' | 'topdown') => game.setCameraMode(m),
+      setCameraMode: (m: 'fpv' | 'chase' | 'topdown') => game.setCameraMode(m),
       forceFinish: (won: boolean) => game.forceFinish(won),
       unlockAudio: () => audio.unlock(),
       telemetry: game.telemetry,
@@ -88,6 +88,7 @@ async function main() {
         return game.renderStats;
       },
       debugScene: () => game.debugScene(),
+      debugTraffic: () => game.debugTraffic(),
     },
     __mukbangReady: true,
   });

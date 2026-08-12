@@ -18,7 +18,12 @@ import type { CenterlinePath } from '../world/path';
  * t), heavy vehicles held to the right, and everyone slower than the player.
  */
 
-const POOL = 84;
+// Pool size and streaming range together set the average traffic density, and
+// with formation spawning they also set how much CLEAR ROAD there is between
+// packs. 84 vehicles inside a 710 m window left a car every 42 m per lane —
+// dense enough that the gaps between packs closed up and the rhythm the
+// formations exist to create never appeared. Fewer cars over more road.
+const POOL = 50;
 const LANES = 5;
 /** Lane centre offsets, left (fast) to right (slow). */
 const LANE_T = Array.from({ length: LANES }, (_, i) => (i - (LANES - 1) / 2) * LANE_WIDTH);
@@ -34,6 +39,9 @@ interface Vehicle {
   speed: number;
   kind: Kind;
   colour: THREE.Color;
+  /** Roof colour for two-tone vehicles, and the local y the split happens at. */
+  roof: THREE.Color;
+  roofY: number;
   /** Guards against one pass being counted as several near misses. */
   scored: boolean;
   /** Seconds until this vehicle may consider changing lane again. */
@@ -54,9 +62,25 @@ const KIND_SPEC: Record<
   4: { w: 2.45, h: 2.2, d: 9.5, cabin: 0.3, speed: [16, 23], lanes: [3, 4] },
 };
 
+/**
+ * Dubai's rolling stock, by frequency.
+ *
+ * This road is overwhelmingly WHITE, and for a reason that has nothing to do
+ * with taste: a white car in Gulf summer is measurably cooler inside, so the
+ * fleet skews white and silver to a degree that looks like an error anywhere
+ * else. The old palette was five greys, a black and a bottle green — a northern
+ * European car park, and one more reason the corridor read as somewhere else.
+ * Weighted by repeats rather than by a parallel weights array.
+ */
 const PALETTE = [
-  0x101216, 0x0d0d10, 0x2b2f36, 0x6e737a, 0xb9bcc0, 0xe8e6e1, 0x1e2a3a, 0x3a1418, 0x14231c,
+  0xe9e7e2, 0xe9e7e2, 0xe9e7e2, 0xf2f1ee, 0xf2f1ee, // white, the default
+  0xc8c9c6, 0xc8c9c6, 0xb0b3b5,                     // silver
+  0xd9cfba, 0xc9b99c,                               // champagne / desert beige
+  0x2b2f36, 0x101216, 0x1e2a3a,                     // the few dark ones
 ];
+
+/** Roof colour, when a vehicle is two-tone. Dubai taxis are cream + red roof. */
+const TAXI_ROOF = 0xb8332b;
 
 function rnd(a: number, b: number) {
   return a + Math.random() * (b - a);
@@ -80,7 +104,7 @@ export class Traffic {
   private smearTint: THREE.InstancedBufferAttribute;
 
   /** How far ahead vehicles are kept populated. */
-  private readonly aheadRange = 620;
+  private readonly aheadRange = 1000;
   private readonly behindRange = 90;
 
   constructor(private path: CenterlinePath) {
@@ -89,14 +113,18 @@ export class Traffic {
       glslVersion: THREE.GLSL3,
       uniforms: { ...vehicleUniforms() },
       vertexShader: /* glsl */ `
-        in vec3 position; in vec3 normal; in mat4 instanceMatrix; in vec3 aColor;
+        in vec3 position; in vec3 normal; in mat4 instanceMatrix;
+        in vec3 aColor; in vec4 aRoof;   // rgb = roof colour, a = local y it starts at
         uniform mat4 modelViewMatrix, projectionMatrix, modelMatrix;
         out vec3 vN; out vec3 vW; out vec3 vC;
         void main() {
           vec4 wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
           vW = wp.xyz;
           vN = normalize(mat3(instanceMatrix) * normal);
-          vC = aColor;
+          // Two-tone by local height. Resolved in the vertex stage because the
+          // split lands on a body crease anyway, so interpolating it across the
+          // face costs nothing and saves a varying.
+          vC = mix(aColor, aRoof.rgb, step(aRoof.a, position.y) * step(0.0, aRoof.a));
           gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
         }
       `,
@@ -139,6 +167,10 @@ export class Traffic {
       mesh.geometry.setAttribute(
         'aColor',
         new THREE.InstancedBufferAttribute(new Float32Array(POOL * 3), 3),
+      );
+      mesh.geometry.setAttribute(
+        'aRoof',
+        new THREE.InstancedBufferAttribute(new Float32Array(POOL * 4), 4),
       );
       mesh.frustumCulled = false;
       mesh.count = 0;
@@ -184,6 +216,8 @@ export class Traffic {
         speed: 30,
         kind: 0,
         colour: new THREE.Color(),
+        roof: new THREE.Color(),
+        roofY: -1,
         scored: false,
         laneCooldown: 0,
         w: 1.9,
@@ -195,17 +229,144 @@ export class Traffic {
 
   reset(playerS: number) {
     for (const v of this.v) v.active = false;
+    this.packS = playerS + 150;
+    this.packSlots.length = 0;
+    this.openLane = 2;
     // Seed the road ahead so the very first seconds already feel like rush hour.
-    for (let i = 0; i < POOL; i++) {
-      this.spawn(this.v[i], playerS + rnd(45, this.aheadRange));
+    for (let i = 0; i < POOL; i++) this.spawn(this.v[i], playerS);
+  }
+
+  /**
+   * ==========================================================================
+   *  PACKS — where the game actually lives
+   * ==========================================================================
+   *
+   *  Traffic used to be placed by drawing a random arc length and a random lane
+   *  for every car independently. That produces a statistically correct road and
+   *  a boring one: at any moment the cars are evenly smeared across five lanes,
+   *  so there is always a way through without planning and never a moment that
+   *  demands anything. Nothing to read, so nothing to be good at.
+   *
+   *  Vehicles are now issued in FORMATIONS separated by clear road. The unit of
+   *  play is the pack: a shape you see coming, read, and pick a line through,
+   *  then a stretch of open road to take the reward and set up the next one.
+   *  Tension, release, tension. That rhythm is the whole game.
+   *
+   *  Gap distances are drawn from a deliberately lumpy distribution rather than
+   *  a uniform one — mostly short, sometimes long — because evenly spaced packs
+   *  become their own kind of metronome and stop being read at all.
+   */
+  private packS = 0;
+  /** Lane + longitudinal offset for each vehicle still owed to the current pack. */
+  private packSlots: Array<{ lane: number; sOff: number }> = [];
+  /**
+   * THE THROUGH-LINE.
+   *
+   * One lane is kept clear in every formation, and it drifts rather than jumps.
+   * This is a hard guarantee, not a tendency, and it exists because the first
+   * version did not have it: packs are placed independently, so two of them
+   * landing 26 m apart with their gaps in different lanes merged into a solid
+   * five-lane wall. A wall with no gap is not difficulty — it is an unavoidable
+   * crash that the player will read, correctly, as the game cheating.
+   *
+   * With a guaranteed line the skill moves to where it belongs: finding it,
+   * getting across to it in the distance available, and deciding how close to
+   * shave the cars either side of it on the way through.
+   */
+  private openLane = 2;
+
+  private startPack(playerS: number) {
+    const r = Math.random();
+    const gap = r < 0.56 ? rnd(34, 52) : r < 0.88 ? rnd(92, 122) : rnd(155, 200);
+    this.packS += gap;
+
+    // Keep the spawn front inside the streaming window. Without the upper clamp
+    // the front runs away from the player — every vehicle placed beyond the
+    // recycle horizon is recycled on the very next frame, which walks the front
+    // forward forever and empties the road.
+    const minS = playerS + 130;
+    const maxS = playerS + this.aheadRange;
+    if (this.packS < minS) this.packS = minS;
+    if (this.packS > maxS) this.packS = maxS;
+
+    // How far the through-line may move is a function of how much road there is
+    // to move in. The car's lateral authority tops out near 3 m/s, so a lane
+    // change costs about 1.2 s — roughly 85 m at racing speed. Shifting the line
+    // across a gap shorter than that would be asking for a move the car cannot
+    // physically make, which is the same unfair-crash failure by another route.
+    const drift = gap > 160 ? 2 : gap > 88 ? 1 : 0;
+    if (drift > 0) {
+      const step = 1 + ((Math.random() * drift) | 0);
+      const dir = Math.random() < 0.5 ? -1 : 1;
+      let want = this.openLane + dir * step;
+      if (want < 0 || want > LANES - 1) want = this.openLane - dir * step;
+      this.openLane = Math.max(0, Math.min(LANES - 1, want));
+    }
+
+    const slots = this.packSlots;
+    slots.length = 0;
+    const open = this.openLane;
+    const form = Math.random();
+
+    if (form < 0.34) {
+      // WALL. Every lane but the through-line. The set piece.
+      for (let l = 0; l < LANES; l++) {
+        if (l !== open) slots.push({ lane: l, sOff: rnd(-6, 6) });
+      }
+    } else if (form < 0.64) {
+      // STAGGER. A diagonal — passable in more than one way, but every line
+      // through it except the through-line costs lateral distance.
+      const dir = Math.random() < 0.5 ? 1 : -1;
+      const start = dir > 0 ? ((Math.random() * 3) | 0) : 2 + ((Math.random() * 3) | 0);
+      for (let i = 0; i < 3; i++) {
+        const lane = start + dir * i;
+        if (lane >= 0 && lane < LANES && lane !== open) {
+          slots.push({ lane, sOff: i * rnd(9, 16) });
+        }
+      }
+    } else if (form < 0.92) {
+      // PAIR. Two adjacent lanes — the everyday case, and what keeps the road
+      // feeling occupied between the set pieces.
+      const l = (Math.random() * (LANES - 1)) | 0;
+      for (const lane of [l, l + 1]) {
+        if (lane !== open) slots.push({ lane, sOff: rnd(-4, 4) });
+      }
+    } else {
+      // SINGLE. Breathing room, and a clean target to shave.
+      const lane = (Math.random() * LANES) | 0;
+      if (lane !== open) slots.push({ lane, sOff: 0 });
+    }
+
+    // A formation that lost every slot to the through-line would leave the pack
+    // scheduler with nothing to hand out and spin startPack until the recursion
+    // limit. Give it one car in an adjacent lane instead.
+    if (slots.length === 0) {
+      slots.push({ lane: open === 0 ? 1 : open - 1, sOff: 0 });
     }
   }
 
-  private spawn(v: Vehicle, s: number) {
+  /** Next (lane, s) the formation scheduler wants filled. */
+  private nextSlot(playerS: number): { lane: number; s: number } {
+    if (this.packSlots.length === 0) this.startPack(playerS);
+    const slot = this.packSlots.pop()!;
+    return { lane: slot.lane, s: this.packS + slot.sOff };
+  }
+
+  private spawn(v: Vehicle, playerS: number) {
+    const { lane, s } = this.nextSlot(playerS);
+
+    // Kind is chosen to fit the lane rather than the other way round: buses and
+    // trucks are held to the two right-hand lanes, exactly as they are on the
+    // real road, so a formation slot in lane 0 can never ask for an artic.
+    const heavyOk = lane >= 3;
     const roll = Math.random();
-    const kind: Kind = roll < 0.46 ? 0 : roll < 0.68 ? 1 : roll < 0.84 ? 2 : roll < 0.93 ? 3 : 4;
+    let kind: Kind;
+    if (heavyOk && roll < 0.26) kind = roll < 0.16 ? 3 : 4;
+    else if (roll < 0.52) kind = 0;
+    else if (roll < 0.74) kind = 1;
+    else kind = 2;
+
     const spec = KIND_SPEC[kind];
-    const lane = spec.lanes[(Math.random() * spec.lanes.length) | 0];
 
     v.active = true;
     v.s = s;
@@ -225,9 +386,23 @@ export class Traffic {
     const laneBias = 1.22 - lane * 0.08;
     v.speed = rnd(spec.speed[0], spec.speed[1]) * laneBias;
 
-    if (kind === 2) v.colour.setHex(0xd8cfae); // Dubai taxi cream
-    else if (kind === 3) v.colour.setHex(0xc8443a);
-    else v.colour.setHex(PALETTE[(Math.random() * PALETTE.length) | 0]);
+    if (kind === 2) {
+      v.colour.setHex(0xd8cfae); // Dubai taxi cream
+      v.roof.setHex(TAXI_ROOF);
+      // Split at the beltline, so the whole greenhouse takes the roof colour.
+      v.roofY = size.h * 0.62;
+    } else {
+      v.colour.setHex(kind === 3 ? 0xc8443a : PALETTE[(Math.random() * PALETTE.length) | 0]);
+      v.roofY = -1; // single tone
+    }
+  }
+
+  /** Diagnostic: every live vehicle ahead of the player, nearest first. */
+  debugLayout(playerS: number) {
+    return this.v
+      .filter((v) => v.active && v.s > playerS - 30)
+      .map((v) => ({ ahead: Math.round(v.s - playerS), lane: v.lane, kind: v.kind }))
+      .sort((a, b) => a.ahead - b.ahead);
   }
 
   /**
@@ -256,17 +431,23 @@ export class Traffic {
 
       // Recycle: dropped too far behind, or drifted beyond the streaming window.
       if (v.s < playerS - this.behindRange || v.s > playerS + this.aheadRange + 260) {
-        this.spawn(v, playerS + rnd(this.aheadRange * 0.55, this.aheadRange));
+        this.spawn(v, playerS);
       }
 
       // --- lane changes ----------------------------------------------------
+      // Rarer and slower than they were. A formation the player has read and
+      // committed to a line through must still be there when they arrive; AI
+      // that reshuffles itself in the last hundred metres turns a skill test
+      // into a coin toss, and the player cannot tell the two apart.
       v.laneCooldown -= dt;
       if (v.laneCooldown <= 0) {
-        v.laneCooldown = rnd(3, 11);
+        v.laneCooldown = rnd(6, 18);
         const spec = KIND_SPEC[v.kind];
         const dir = Math.random() < 0.5 ? -1 : 1;
         const cand = v.lane + dir;
-        if (spec.lanes.includes(cand) && Math.random() < 0.55) v.targetLane = cand;
+        // Only well ahead of the player, never inside the reading distance.
+        const farAhead = v.s - playerS > 220;
+        if (farAhead && spec.lanes.includes(cand) && Math.random() < 0.45) v.targetLane = cand;
       }
       const targetT = LANE_T[v.targetLane];
       if (Math.abs(v.t - targetT) > 0.05) {
@@ -289,7 +470,13 @@ export class Traffic {
             out.crashSeverity = v.kind >= 3 ? 1.5 : 1;
             v.scored = true;
           }
-        } else if (Math.abs(dtLat) < halfWide + 1.7 && !v.scored) {
+        } else if (Math.abs(dtLat) < halfWide + 2.15 && !v.scored) {
+          // The band has to be wide enough that a player taking the racing line
+          // through a formation collects near misses without aiming for them.
+          // At 1.7 m it sat just inside a lane width, so a clean adjacent-lane
+          // pass scored nothing and the reward loop was invisible until someone
+          // deliberately went hunting for it — which nobody does before they
+          // have seen it pay once.
           out.nearMiss++;
           v.scored = true;
         }
@@ -311,6 +498,8 @@ export class Traffic {
       km.setMatrixAt(ki, m);
       (km.geometry.getAttribute('aColor') as THREE.InstancedBufferAttribute)
         .setXYZ(ki, v.colour.r, v.colour.g, v.colour.b);
+      (km.geometry.getAttribute('aRoof') as THREE.InstancedBufferAttribute)
+        .setXYZW(ki, v.roof.r, v.roof.g, v.roof.b, v.roofY);
 
       // Taillights, brighter when we are closing on them.
       const closing = THREE.MathUtils.clamp(1 - Math.abs(ds) / 200, 0.25, 1);
@@ -348,6 +537,7 @@ export class Traffic {
       km.count = kindCount[k];
       km.instanceMatrix.needsUpdate = true;
       (km.geometry.getAttribute('aColor') as THREE.InstancedBufferAttribute).needsUpdate = true;
+      (km.geometry.getAttribute('aRoof') as THREE.InstancedBufferAttribute).needsUpdate = true;
     }
     this.smears.count = n;
     this.tails.count = tailN;

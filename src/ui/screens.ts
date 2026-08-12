@@ -434,12 +434,30 @@ export function createTitleScreen(deps: ScreenDeps): TitleScreen {
 
   const row = el('div', 'title-row');
 
-  // The camera comparison is settled: three independent reviews of the real
-  // rendered frames picked the behind-car chase view, the last of them after
-  // the road-culling bug that had unfairly penalised the top-down was fixed.
-  // A camera picker is a developer control, not something a diner should meet
-  // on a title screen, so the toggle is gone and chase is the only mode.
-  // TopDownRig is retained in src/game/cameras.ts for reference.
+  // View picker. FPV is the default and what the whole scene is now framed
+  // for; chase stays because a driver's-eye view is genuinely harder to read
+  // on a first run, and someone who bounces off it should not have to bounce
+  // off the game with it. TopDownRig is retained in cameras.ts for reference
+  // but is not offered — it lost the framing comparison outright.
+  const VIEWS: Array<{ id: CameraMode; label: string; hint: string }> = [
+    { id: 'fpv', label: "Driver's seat", hint: "Drive from behind the wheel" },
+    { id: 'chase', label: 'Chase', hint: 'Drive from behind the car' },
+  ];
+  const seg = el('div', 'mkd-seg');
+  seg.setAttribute('role', 'group');
+  seg.setAttribute('aria-label', 'Camera view');
+  const viewBtns = VIEWS.map((v) => {
+    const b = el('button', 'mkd-hit', v.label);
+    b.type = 'button';
+    b.setAttribute('aria-label', v.hint);
+    press(b, host, () => {
+      host.setCameraMode(v.id);
+      syncCamera();
+    });
+    seg.appendChild(b);
+    return b;
+  });
+  row.appendChild(seg);
 
   const mute = el('button', 'mkd-mute mkd-hit');
   mute.type = 'button';
@@ -460,8 +478,16 @@ export function createTitleScreen(deps: ScreenDeps): TitleScreen {
   root.appendChild(wrap);
 
   function syncCamera(): void {
-    // Chase is the only shipped camera; keep the engine in that mode.
-    if (host.getCameraMode() !== 'chase') host.setCameraMode('chase');
+    // The engine may have been left in a mode this picker does not offer
+    // (top-down, via a saved preference); fall back to the default.
+    let mode = host.getCameraMode();
+    if (!VIEWS.some((v) => v.id === mode)) {
+      mode = 'fpv';
+      host.setCameraMode(mode);
+    }
+    VIEWS.forEach((v, i) => {
+      viewBtns[i].setAttribute('aria-pressed', v.id === mode ? 'true' : 'false');
+    });
   }
 
   function syncMute(): void {
