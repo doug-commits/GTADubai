@@ -153,7 +153,10 @@ export class Game {
     this.scene.add(this.landmarks.group);
     // Metro viaduct, stations, palms, light masts and bilingual gantries.
     // Replaces the generic poles/gantries that Furniture used to supply.
-    this.metroLine = new MetroLine(this.corridor);
+    this.metroLine = new MetroLine(this.corridor, {
+      fromS: this.startS - 400,
+      toS: this.corridor.finishS + 250,
+    });
     this.scene.add(this.metroLine.group);
     this.ui.setBootProgress(0.85);
 

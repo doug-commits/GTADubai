@@ -40,6 +40,49 @@ function metroAt(corridor: Corridor, s: number) {
   };
 }
 
+
+/**
+ * Build an instanced mesh SPLIT INTO SPATIAL CHUNKS along the corridor.
+ *
+ * three culls an InstancedMesh as a single unit, so one mesh spanning 16 km is
+ * either wholly drawn or wholly skipped — in practice always drawn, pushing
+ * every palm on the route through vertex processing on every frame. That is
+ * how this scene reached 800k triangles.
+ *
+ * Splitting the run into chunks lets the frustum test throw away everything
+ * outside the ~600 m the player can actually see. It costs more draw calls on
+ * paper, but only the few chunks in view are ever submitted.
+ */
+function chunked(
+  group: THREE.Group,
+  geo: THREE.BufferGeometry,
+  mat: THREE.Material,
+  placements: Array<{ s: number; m: THREE.Matrix4; colour?: THREE.Color }>,
+  chunkM = 400,
+): THREE.InstancedMesh[] {
+  const byChunk = new Map<number, typeof placements>();
+  for (const p of placements) {
+    const k = Math.floor(p.s / chunkM);
+    let arr = byChunk.get(k);
+    if (!arr) byChunk.set(k, (arr = []));
+    arr.push(p);
+  }
+  const out: THREE.InstancedMesh[] = [];
+  for (const arr of byChunk.values()) {
+    if (!arr.length) continue;
+    const mesh = new THREE.InstancedMesh(geo, mat, arr.length);
+    arr.forEach((p, i) => mesh.setMatrixAt(i, p.m));
+    mesh.instanceMatrix.needsUpdate = true;
+    // Frustum culling is the entire point here, so it stays ON and the bounds
+    // must be real.
+    mesh.frustumCulled = true;
+    mesh.computeBoundingSphere();
+    group.add(mesh);
+    out.push(mesh);
+  }
+  return out;
+}
+
 function concreteMaterial(name: string, fogNear: number, fogFar: number) {
   return new THREE.RawShaderMaterial({
     name,
@@ -140,12 +183,27 @@ function emissiveMaterial(color: THREE.Color, gain: number) {
   });
 }
 
+export interface MetroLineRange {
+  /** Only decorate this stretch of the corridor, metres of arc length. */
+  fromS: number;
+  toS: number;
+}
+
 export class MetroLine {
   readonly group = new THREE.Group();
   private materials: THREE.RawShaderMaterial[] = [];
+  private from = 0;
+  private to = Infinity;
 
-  constructor(corridor: Corridor) {
+  /**
+   * `range` limits placement to the stretch the player actually drives. The
+   * corridor is 16 km but a run covers about 5 km of it, and decorating the
+   * other 11 km cost triangles and draw calls for scenery nobody ever sees.
+   */
+  constructor(corridor: Corridor, range?: MetroLineRange) {
     const path = corridor.path;
+    this.from = Math.max(0, range?.fromS ?? 0);
+    this.to = Math.min(path.length, range?.toS ?? path.length);
     const built = buildMetro({ lengthM: BAY, pierSpacing: BAY });
 
     const bays = Math.floor(path.length / BAY);
@@ -157,56 +215,47 @@ export class MetroLine {
     // --- viaduct ----------------------------------------------------------
     const deckMat = concreteMaterial('metro-deck', 260, 2400);
     this.materials.push(deckMat);
-    const deck = new THREE.InstancedMesh(built.structure, deckMat, bays);
-    for (let i = 0; i < bays; i++) {
-      const p = metroAt(corridor, i * BAY);
-      q.setFromAxisAngle(up, p.heading);
-      m.compose(new THREE.Vector3(p.x, 0, p.z), q, one);
-      deck.setMatrixAt(i, m);
-    }
-    deck.instanceMatrix.needsUpdate = true;
-    deck.frustumCulled = false;
-    this.group.add(deck);
-
     const deckGlowMat = emissiveMaterial(new THREE.Color(0.55, 0.72, 1.0), 0.9);
     this.materials.push(deckGlowMat);
-    const deckGlow = new THREE.InstancedMesh(built.emissive, deckGlowMat, bays);
+
+    const deckPlace: Array<{ s: number; m: THREE.Matrix4 }> = [];
     for (let i = 0; i < bays; i++) {
-      const p = metroAt(corridor, i * BAY);
+      const sAt = i * BAY;
+      if (sAt < this.from || sAt > this.to) continue;
+      const p = metroAt(corridor, sAt);
       q.setFromAxisAngle(up, p.heading);
-      m.compose(new THREE.Vector3(p.x, 0, p.z), q, one);
-      deckGlow.setMatrixAt(i, m);
+      const mm = new THREE.Matrix4().compose(new THREE.Vector3(p.x, 0, p.z), q, one);
+      deckPlace.push({ s: sAt, m: mm });
     }
-    deckGlow.instanceMatrix.needsUpdate = true;
-    deckGlow.frustumCulled = false;
-    deckGlow.renderOrder = 7;
-    this.group.add(deckGlow);
+    chunked(this.group, built.structure, deckMat, deckPlace);
+    for (const g of chunked(this.group, built.emissive, deckGlowMat, deckPlace)) {
+      g.renderOrder = 7;
+    }
 
     // --- stations ---------------------------------------------------------
-    // Roughly every 1.6 km, which is close to the real Red Line spacing along
-    // this stretch, and far enough apart that one is always an event.
+    // Roughly every 1.6 km, close to the real Red Line spacing on this stretch.
     const STATION_SPACING = 1600;
     const stationCount = Math.max(1, Math.floor(path.length / STATION_SPACING));
     const stMat = concreteMaterial('metro-station', 260, 2600);
     this.materials.push(stMat);
-    const stations = new THREE.InstancedMesh(built.station, stMat, stationCount);
     const stGlowMat = emissiveMaterial(new THREE.Color(1.0, 0.78, 0.34), 1.9);
     this.materials.push(stGlowMat);
-    const stGlow = new THREE.InstancedMesh(built.stationEmissive, stGlowMat, stationCount);
 
+    const stPlace: Array<{ s: number; m: THREE.Matrix4 }> = [];
     for (let i = 0; i < stationCount; i++) {
-      const p = metroAt(corridor, (i + 0.5) * STATION_SPACING);
+      const sAt = (i + 0.5) * STATION_SPACING;
+      if (sAt < this.from || sAt > this.to) continue;
+      const p = metroAt(corridor, sAt);
       q.setFromAxisAngle(up, p.heading);
-      m.compose(new THREE.Vector3(p.x, 0, p.z), q, one);
-      stations.setMatrixAt(i, m);
-      stGlow.setMatrixAt(i, m);
+      stPlace.push({
+        s: sAt,
+        m: new THREE.Matrix4().compose(new THREE.Vector3(p.x, 0, p.z), q, one),
+      });
     }
-    stations.instanceMatrix.needsUpdate = true;
-    stGlow.instanceMatrix.needsUpdate = true;
-    stations.frustumCulled = false;
-    stGlow.frustumCulled = false;
-    stGlow.renderOrder = 8;
-    this.group.add(stations, stGlow);
+    chunked(this.group, built.station, stMat, stPlace, 1600);
+    for (const g of chunked(this.group, built.stationEmissive, stGlowMat, stPlace, 1600)) {
+      g.renderOrder = 8;
+    }
 
     this.addPalms(corridor);
     this.addMasts(corridor);
@@ -216,12 +265,12 @@ export class MetroLine {
   /** Date palms down both verges — the planting that defines a Dubai arterial. */
   private addPalms(corridor: Corridor) {
     const path = corridor.path;
-    const SPACING = 26;
+    const SPACING = 38;
     const count = Math.floor(path.length / SPACING) * 2;
 
     // A handful of distinct palms, instanced — a row of identical trees is
     // instantly readable as fake, but so is a unique mesh per tree.
-    const VARIANTS = 4;
+    const VARIANTS = 3;
     const variants = Array.from({ length: VARIANTS }, (_, i) => buildPalm(i * 977 + 13));
     const trunkMat = concreteMaterial('palm-trunk', 200, 1400);
     this.materials.push(trunkMat);
@@ -283,21 +332,19 @@ export class MetroLine {
     });
     this.materials.push(frondMat);
 
-    const perVariant = Math.ceil(count / VARIANTS);
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const up = new THREE.Vector3(0, 1, 0);
 
     variants.forEach((v, vi) => {
-      const trunks = new THREE.InstancedMesh(v.trunk, trunkMat, perVariant);
-      const fronds = new THREE.InstancedMesh(v.fronds, frondMat, perVariant);
-      let n = 0;
-      for (let i = vi; i < count && n < perVariant; i += VARIANTS) {
+      const trunkPlace: Array<{ s: number; m: THREE.Matrix4 }> = [];
+      for (let i = vi; i < count; i += VARIANTS) {
         const idx = Math.floor(i / 2);
         const side = i % 2 === 0 ? -1 : 1;
-        const s = idx * SPACING;
-        if (s > corridor.path.length) break;
-        const p = corridor.path.sample(s);
+        const sAt = idx * SPACING;
+        if (sAt > corridor.path.length) break;
+        if (sAt < this.from || sAt > this.to) continue;
+        const p = corridor.path.sample(sAt);
         const off = (ROAD_HALF_WIDTH + 16 + (vi % 2) * 3) * side;
         const sc = 0.85 + ((vi * 37 + i) % 7) * 0.05;
         q.setFromAxisAngle(up, (i * 2.399) % (Math.PI * 2));
@@ -306,17 +353,10 @@ export class MetroLine {
           q,
           new THREE.Vector3(sc, sc, sc),
         );
-        trunks.setMatrixAt(n, m);
-        fronds.setMatrixAt(n, m);
-        n++;
+        trunkPlace.push({ s: sAt, m: m.clone() });
       }
-      trunks.count = n;
-      fronds.count = n;
-      trunks.instanceMatrix.needsUpdate = true;
-      fronds.instanceMatrix.needsUpdate = true;
-      trunks.frustumCulled = false;
-      fronds.frustumCulled = false;
-      this.group.add(trunks, fronds);
+      chunked(this.group, v.trunk, trunkMat, trunkPlace);
+      chunked(this.group, v.fronds, frondMat, trunkPlace);
     });
   }
 
@@ -324,31 +364,28 @@ export class MetroLine {
   private addMasts(corridor: Corridor) {
     const path = corridor.path;
     const SPACING = 48;
-    const count = Math.floor(path.length / SPACING) * 2;
     const mast = buildLightMast(14);
     const mat = concreteMaterial('light-mast', 200, 1600);
     this.materials.push(mat);
-    const mesh = new THREE.InstancedMesh(mast.structure, mat, count);
 
+    const place: Array<{ s: number; m: THREE.Matrix4 }> = [];
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const up = new THREE.Vector3(0, 1, 0);
-    let n = 0;
-    for (let s = 0; s < path.length && n < count; s += SPACING) {
-      const p = path.sample(s);
+    const one = new THREE.Vector3(1, 1, 1);
+    for (let sAt = 0; sAt < path.length; sAt += SPACING) {
+      if (sAt < this.from || sAt > this.to) continue;
+      const p = path.sample(sAt);
       for (const side of [-1, 1]) {
-        if (n >= count) break;
         const off = (ROAD_HALF_WIDTH + 2.4) * side;
-        // Arm reaches in over the road, so flip the mast on the far side.
+        // Arm reaches +X, so the far-side mast is ROTATED, never mirrored —
+        // a negative scale would invert winding and the column would vanish.
         q.setFromAxisAngle(up, p.heading + (side > 0 ? Math.PI : 0));
-        m.compose(new THREE.Vector3(p.x + p.nx * off, 0, p.z + p.nz * off), q, new THREE.Vector3(1, 1, 1));
-        mesh.setMatrixAt(n++, m);
+        m.compose(new THREE.Vector3(p.x + p.nx * off, 0, p.z + p.nz * off), q, one);
+        place.push({ s: sAt, m: m.clone() });
       }
     }
-    mesh.count = n;
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.frustumCulled = false;
-    this.group.add(mesh);
+    chunked(this.group, mast.structure, mat, place);
   }
 
   /** Bilingual overhead direction signs — the strongest UAE cue at eye level. */
@@ -375,35 +412,26 @@ export class MetroLine {
     const up = new THREE.Vector3(0, 1, 0);
     const one = new THREE.Vector3(1, 1, 1);
 
-    const structs = new THREE.InstancedMesh(g.structure, structMat, count);
+    const gantryPlace: Array<{ s: number; m: THREE.Matrix4 }> = [];
     for (let i = 0; i < count; i++) {
-      const p = path.sample((i + 1) * SPACING);
+      const sAt = (i + 1) * SPACING;
+      if (sAt < this.from || sAt > this.to) continue;
+      const p = path.sample(sAt);
       q.setFromAxisAngle(up, p.heading);
-      m.compose(new THREE.Vector3(p.x, 0, p.z), q, one);
-      structs.setMatrixAt(i, m);
+      gantryPlace.push({
+        s: sAt,
+        m: new THREE.Matrix4().compose(new THREE.Vector3(p.x, 0, p.z), q, one),
+      });
     }
-    structs.instanceMatrix.needsUpdate = true;
-    structs.frustumCulled = false;
-    this.group.add(structs);
+    chunked(this.group, g.structure, structMat, gantryPlace, 640);
 
-    // One panel mesh per distinct destination, instanced across its occurrences,
-    // so the canvas textures are built once and reused.
+    // One panel mesh per distinct destination so the canvas textures are built
+    // once and reused across every gantry showing that destination.
     SIGNS.forEach((spec, si) => {
       const tex = makePanelTexture({ ...spec, colour: 'green' });
       const panelMat = new THREE.MeshBasicMaterial({ map: tex, toneMapped: false });
-      const slots = Math.ceil(count / SIGNS.length);
-      const panels = new THREE.InstancedMesh(g.panel, panelMat, slots);
-      let n = 0;
-      for (let i = si; i < count && n < slots; i += SIGNS.length) {
-        const p = path.sample((i + 1) * SPACING);
-        q.setFromAxisAngle(up, p.heading);
-        m.compose(new THREE.Vector3(p.x, 0, p.z), q, one);
-        panels.setMatrixAt(n++, m);
-      }
-      panels.count = n;
-      panels.instanceMatrix.needsUpdate = true;
-      panels.frustumCulled = false;
-      this.group.add(panels);
+      const mine = gantryPlace.filter((_, i) => i % SIGNS.length === si);
+      chunked(this.group, g.panel, panelMat, mine, 640);
     });
   }
 
