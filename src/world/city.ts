@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { SKY_GLSL, SUN_DIR } from '../render/sky';
 import { FACADE_VERT, FACADE_FRAG, facadeUniforms } from './facade';
 import { buildLandmark } from './landmarks';
+import { buildTowerSet } from './towers';
 import { PBR_GLSL, SKY_IBL_GLSL } from '../render/pbr';
 import type { Corridor } from './corridor';
 import { ROAD_HALF_WIDTH } from './corridor';
@@ -260,6 +261,7 @@ function heightAt(u: number, rnd: () => number): number {
 }
 
 export class City {
+  readonly group = new THREE.Group();
   readonly mesh: THREE.InstancedMesh;
   readonly material: THREE.RawShaderMaterial;
 
@@ -340,8 +342,16 @@ export class City {
       }
     }
 
-    // --- build the instanced mesh -----------------------------------------
-    const geo = new THREE.BoxGeometry(1, 1, 1);
+    // --- build the instanced meshes ---------------------------------------
+    //
+    // One InstancedMesh PER TOWER VARIANT rather than one shared box.
+    //
+    // A box with a good glazing shader on it is still a box, and a corridor of
+    // two hundred identical boxes was the main reason this skyline read as any
+    // downtown. towers.ts lofts a set of distinct silhouettes — setbacks,
+    // tapers, curved and twisted plans, chamfered corners, real crowns and
+    // podiums — and each placement takes the variant nearest its target height,
+    // then scales to fit. Variety of SILHOUETTE is what a skyline is read by.
     this.material = new THREE.RawShaderMaterial({
       name: 'buildings',
       glslVersion: THREE.GLSL3,
@@ -351,28 +361,62 @@ export class City {
       side: THREE.FrontSide,
     });
 
-    const mesh = new THREE.InstancedMesh(geo, this.material, boxes.length);
+    const VARIANTS = 18;
+    const towerSet = buildTowerSet(VARIANTS, { minHeight: 30, maxHeight: 320 });
+
+    // Bucket every placement onto the variant whose natural height is closest,
+    // so the scale we then apply stays near 1 and the proportions survive.
+    const buckets: BoxInstance[][] = towerSet.map(() => []);
+    for (const b of boxes) {
+      let best = 0;
+      let bestD = Infinity;
+      for (let i = 0; i < towerSet.length; i++) {
+        const d = Math.abs(towerSet[i].height - b.h);
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+        }
+      }
+      buckets[best].push(b);
+    }
+
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const pos = new THREE.Vector3();
     const scl = new THREE.Vector3();
-    const params = new Float32Array(boxes.length * 4);
+    const up = new THREE.Vector3(0, 1, 0);
+    const meshes: THREE.InstancedMesh[] = [];
 
-    boxes.forEach((b, i) => {
-      pos.set(b.x, b.y, b.z);
-      q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), b.rot);
-      scl.set(b.w, b.h, b.d);
-      m.compose(pos, q, scl);
-      mesh.setMatrixAt(i, m);
-      params[i * 4 + 0] = b.w;
-      params[i * 4 + 1] = b.h;
-      params[i * 4 + 2] = b.d;
-      params[i * 4 + 3] = b.seed;
+    towerSet.forEach((tower, vi) => {
+      const list = buckets[vi];
+      if (!list.length) return;
+      const geo = tower.geometry.clone();
+      const im = new THREE.InstancedMesh(geo, this.material, list.length);
+      const params = new Float32Array(list.length * 4);
+      list.forEach((b, i) => {
+        // Towers are modelled standing on y=0, so place the base, not the centre.
+        pos.set(b.x, 0, b.z);
+        q.setFromAxisAngle(up, b.rot);
+        scl.set(
+          b.w / Math.max(tower.footprint.x, 0.001),
+          b.h / Math.max(tower.height, 0.001),
+          b.d / Math.max(tower.footprint.y, 0.001),
+        );
+        m.compose(pos, q, scl);
+        im.setMatrixAt(i, m);
+        params[i * 4 + 0] = b.w;
+        params[i * 4 + 1] = b.h;
+        params[i * 4 + 2] = b.d;
+        params[i * 4 + 3] = b.seed;
+      });
+      im.instanceMatrix.needsUpdate = true;
+      geo.setAttribute('aParams', new THREE.InstancedBufferAttribute(params, 4));
+      im.frustumCulled = false;
+      meshes.push(im);
+      this.group.add(im);
     });
-    mesh.instanceMatrix.needsUpdate = true;
-    geo.setAttribute('aParams', new THREE.InstancedBufferAttribute(params, 4));
-    mesh.frustumCulled = false;
 
+    const mesh = meshes[0] ?? new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), this.material, 1);
     this.mesh = mesh;
     this.loadAssetSlot();
   }

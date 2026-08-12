@@ -23,13 +23,12 @@ const BAY = 30;
 /**
  * Lateral offset of the Metro alignment from the road centreline, metres.
  *
- * The Red Line runs above the MEDIAN, between the two carriageways — it does
- * not run over the traffic. We model a single carriageway, so the median sits
- * off the driver's left (UAE drives on the right), and the viaduct goes there.
- * Placing it on the centreline plants a pier in the middle of the running
- * lanes, which is exactly what it did the first time.
+ * The Red Line runs alongside this carriageway on the DRIVER'S RIGHT heading
+ * north-east into Trade Centre, which is the direction of this run. It never
+ * runs over the traffic — putting it on the centreline plants a pier in the
+ * middle of the running lanes, which is exactly what it did the first time.
  */
-const METRO_OFFSET = -(ROAD_HALF_WIDTH + 13);
+const METRO_OFFSET = ROAD_HALF_WIDTH + 13;
 
 /** Position of the metro alignment at arc length s. */
 function metroAt(corridor: Corridor, s: number) {

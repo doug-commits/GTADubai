@@ -224,7 +224,7 @@ export class Game {
     this.ui.setBootProgress(0.6);
 
     this.city = new City(this.corridor);
-    this.scene.add(this.city.mesh);
+    this.scene.add(this.city.group);
     this.landmarks = new Landmarks(this.corridor);
     this.scene.add(this.landmarks.group);
     // Metro viaduct, stations, palms, light masts and bilingual gantries.
@@ -543,7 +543,7 @@ export class Game {
     const named = new Map<THREE.Object3D, string>();
     named.set(this.road.mesh, 'road');
     named.set(this.barriers.mesh, 'barriers');
-    named.set(this.city.mesh, 'city');
+    named.set(this.city.group, 'city');
     named.set(this.sky.mesh, 'sky');
 
     const nameOf = (o: THREE.Object3D | null): string => {
