@@ -170,29 +170,33 @@ async function main() {
   const cx = 195;
   const cy = 640;
 
-  await page.touchscreen.tap(cx, cy).catch(() => {});
-  const drive = async (dx, ms) => {
+  // One long press per leg, with the pointer swept across it. Under software GL
+  // each input event costs real time, so a few wide drags produce far more game
+  // time per wall-clock second than many short ones — and the car is steering
+  // continuously either way.
+  const drive = async (legMs, amplitude) => {
     await page.mouse.move(cx, cy);
     await page.mouse.down();
-    await page.mouse.move(cx + dx, cy, { steps: 6 });
-    await sleep(ms);
+    const t0 = Date.now();
+    let i = 0;
+    while (Date.now() - t0 < legMs) {
+      const dx = Math.sin(i * 0.9) * amplitude;
+      await page.mouse.move(cx + dx, cy);
+      await sleep(120);
+      i++;
+    }
     await page.mouse.up();
   };
 
   const marks = [
-    { at: 1200, name: '03-early-run' },
-    { at: 3200, name: '04-mid-run' },
-    { at: 5600, name: '05-traffic' },
-    { at: 8200, name: '06-late-run' },
+    { legMs: 2200, amp: 40, name: '03-early-run' },
+    { legMs: 2600, amp: 60, name: '04-mid-run' },
+    { legMs: 2600, amp: 70, name: '05-traffic' },
+    { legMs: 2600, amp: 45, name: '06-late-run' },
   ];
 
-  let elapsed = 0;
   for (const m of marks) {
-    while (elapsed < m.at) {
-      const dx = Math.sin(elapsed / 900) * 55;
-      await drive(dx, 260);
-      elapsed += 300;
-    }
+    await drive(m.legMs, m.amp);
     await shot(m.name);
     const p = await page.evaluate(() => ({
       ...window.__fpsWindow(),

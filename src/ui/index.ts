@@ -188,10 +188,15 @@ export function createUi(): Ui {
       toastEl = t;
       el.appendChild(t);
 
-      // Delegated pressed state — one pair of listeners for every control.
+      // Delegated pressed state — one listener set for every control in the UI.
+      // Press-down is captured on our root; release is captured on the document
+      // because the root is `pointer-events:none`, so a finger lifted anywhere
+      // off a control targets the canvas and would never bubble back to us —
+      // leaving the button stuck in its pressed state.
       el.addEventListener('pointerdown', onPointerDown, { passive: true });
-      el.addEventListener('pointerup', onPointerUp, { passive: true });
-      el.addEventListener('pointercancel', onPointerUp, { passive: true });
+      document.addEventListener('pointerup', onPointerUp, { passive: true });
+      document.addEventListener('pointercancel', onPointerUp, { passive: true });
+      window.addEventListener('blur', onPointerUp);
       document.addEventListener('keydown', onKeyDown);
 
       document.body.appendChild(el);

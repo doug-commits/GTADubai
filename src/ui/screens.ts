@@ -29,10 +29,39 @@ import { createVoucher, type VoucherView } from './voucher';
 const HOOK = "Sheikh Zayed Road. Dusk. Your table's waiting.";
 const DEFAULT_BRANCH: BranchId = 'dwtc';
 
-/** Asset slots. Relative so they honour Vite's `base: './'`. */
-const ASSET_WORDMARK = 'assets/brand/wordmark.svg';
-const ASSET_HERO = 'assets/storefront/hero.webp';
-const ASSET_INTERIOR = 'assets/storefront/interior.webp';
+/**
+ * Asset slots, each a fallback chain tried in order. Relative paths so they
+ * honour Vite's `base: './'`. Nothing here is required — if every candidate is
+ * missing the styled SVG/CSS version stays on screen and the player sees no
+ * difference. `assets/SLOTS.md` calls the exterior shot `exterior.webp`; the
+ * original brief called it `hero.webp`, so both are accepted.
+ */
+const ASSET_WORDMARK = ['assets/brand/wordmark.svg', 'assets/brand/wordmark.webp'] as const;
+const ASSET_HERO = ['assets/storefront/hero.webp', 'assets/storefront/exterior.webp'] as const;
+const ASSET_INTERIOR = ['assets/storefront/interior.webp'] as const;
+
+/**
+ * Try each candidate source in order. On exhaustion the <img> removes itself,
+ * leaving the placeholder art untouched — a missing slot is never a broken
+ * image icon.
+ */
+function loadFirst(
+  img: HTMLImageElement,
+  sources: readonly string[],
+  onLoad: () => void,
+): void {
+  let index = 0;
+  const next = (): void => {
+    if (index >= sources.length) {
+      if (img.parentNode) img.parentNode.removeChild(img);
+      return;
+    }
+    img.src = sources[index++]!;
+  };
+  img.addEventListener('load', onLoad);
+  img.addEventListener('error', next);
+  next();
+}
 
 /* -------------------------------------------------------------- helpers -- */
 
@@ -256,7 +285,7 @@ function interiorArt(): string {
 /** Hero frame: placeholder art always present, bitmap fades in when it loads. */
 function createHeroFrame(
   art: string,
-  src: string,
+  sources: readonly string[],
   alt: string,
   caption: string,
   extraClass?: string,
@@ -270,13 +299,8 @@ function createHeroFrame(
   img.alt = '';
   img.decoding = 'async';
   img.loading = 'eager';
-  img.addEventListener('load', () => img.classList.add('is-loaded'));
-  img.addEventListener('error', () => {
-    // Slot not supplied yet — the SVG placeholder stays, nothing looks broken.
-    if (img.parentNode) img.parentNode.removeChild(img);
-  });
-  img.src = src;
   frame.appendChild(img);
+  loadFirst(img, sources, () => img.classList.add('is-loaded'));
 
   if (caption) frame.appendChild(el('div', 'hero-cap', caption));
   return frame;
@@ -376,15 +400,11 @@ export function createTitleScreen(deps: ScreenDeps): TitleScreen {
   const mark = el('img', 'title-img');
   mark.alt = 'Mukbang Dash';
   mark.decoding = 'async';
-  mark.addEventListener('load', () => {
+  lockup.appendChild(mark);
+  loadFirst(mark, ASSET_WORDMARK, () => {
     lockup.classList.add('has-art');
     mark.classList.add('is-loaded');
   });
-  mark.addEventListener('error', () => {
-    if (mark.parentNode) mark.parentNode.removeChild(mark);
-  });
-  mark.src = ASSET_WORDMARK;
-  lockup.appendChild(mark);
   top.appendChild(lockup);
 
   top.appendChild(el('div', 'title-rule'));

@@ -90,6 +90,13 @@
   color: var(--gold);
   text-decoration: none;
 }
+/* Anchors styled as buttons keep the button's ink, not the link colour. */
+.mkd a.mkd-btn {
+  color: var(--cream);
+}
+.mkd a.mkd-btn--gold {
+  color: #24120a;
+}
 
 /*
  * index.html sets `touch-action: none` on <html, body> to protect drag-to-steer.
@@ -178,6 +185,27 @@ body {
 }
 .mkd-layer--flat.is-on {
   transform: none;
+}
+
+/* Arrival should feel like pulling up to the door, so it travels further. */
+.mkd-win {
+  transform: translate3d(0, 26px, 0) scale(0.985);
+}
+.mkd-win.is-on {
+  transform: translate3d(0, 0, 0) scale(1);
+}
+/* Fail is cooler and quieter — the ember drops back but never goes out. */
+.mkd-fail .mkd-scrim {
+  background:
+    radial-gradient(120% 70% at 50% 6%, rgba(194, 65, 12, 0.2) 0%, rgba(11, 7, 8, 0) 60%),
+    linear-gradient(180deg, rgba(11, 7, 8, 0.94) 0%, rgba(11, 7, 8, 0.98) 100%);
+}
+
+.mkd-leaderboard .ov-panel {
+  max-height: 90%;
+}
+.mkd-credits .ov-panel {
+  max-height: 78%;
 }
 
 /* Full-bleed warm scrim behind the narrative screens. */
@@ -976,6 +1004,7 @@ body {
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.18em;
+  text-transform: uppercase;
   color: var(--ink-faint);
 }
 .hud-speed .speed-bar {
@@ -1084,6 +1113,7 @@ body {
   font-weight: 900;
   line-height: 0.94;
   letter-spacing: -0.03em;
+  text-transform: uppercase;
   background: linear-gradient(180deg, var(--cream), var(--gold-soft) 60%, var(--gold));
   -webkit-background-clip: text;
   background-clip: text;
@@ -1095,6 +1125,9 @@ body {
   -webkit-background-clip: text;
   background-clip: text;
   font-size: clamp(28px, 9vw, 44px);
+  /* Warm, not punishing — sentence case reads as an invitation, not a scold. */
+  text-transform: none;
+  letter-spacing: -0.02em;
 }
 .mkd-sub {
   margin-top: 7px;
@@ -1778,6 +1811,12 @@ body {
   }
   .mkd-cta-grid {
     grid-template-columns: repeat(3, 1fr);
+  }
+  .mkd-cta-grid > .mkd-btn {
+    font-size: 13px;
+    letter-spacing: 0.07em;
+    padding: 0 10px;
+    line-height: 1.2;
   }
   .mkd-overlay .ov-panel {
     left: 50%;

@@ -184,7 +184,8 @@ export function createHud(host: UiHost): HudView {
   let lastHeatQ = -1;
   let lastRailQ = -1;
   let lastDistKey = -1;
-  let lastDistUnitKm = false;
+  /** null until the first write, so the unit label is always painted once. */
+  let lastDistUnitKm: boolean | null = null;
   let scoreShown = 0;
   let scoreTarget = 0;
   let lastScoreText = 0;
@@ -215,13 +216,15 @@ export function createHud(host: UiHost): HudView {
     }
   }
 
-  function reset(): void {
+  /** Blank every cache and every rendered value. */
+  function clear(): void {
     totalDistance = -1;
     lastTenths = -1;
     lastSecond = -1;
     lastHeatQ = -1;
     lastRailQ = -1;
     lastDistKey = -1;
+    lastDistUnitKm = null;
     scoreShown = 0;
     scoreTarget = 0;
     lastScoreText = -1;
@@ -266,7 +269,16 @@ export function createHud(host: UiHost): HudView {
     for (let i = 0; i < segNodes.length; i++) segNodes[i]!.classList.remove('is-lit');
   }
 
-  reset();
+  /**
+   * Called as a run starts. Clears the caches, then paints one frame straight
+   * from live telemetry so the HUD never fades in showing a blank 0:00.0.
+   */
+  function reset(): void {
+    clear();
+    tick(0);
+  }
+
+  clear();
 
   function tick(dt: number): void {
     const t = host.telemetry;
