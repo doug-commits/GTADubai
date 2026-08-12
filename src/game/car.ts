@@ -133,7 +133,12 @@ export class Car {
     this.group.add(new THREE.Mesh(parts.glass, glassMat));
     this.group.add(new THREE.Mesh(parts.trim, trimMat));
 
-    const tyre = new THREE.MeshBasicMaterial({ color: 0x07060a });
+    // Tyres were flat 0x07060a — black rubber on black tarmac, so the wheels
+    // were present but invisible and the car read as a floating lozenge.
+    // Rubber is dark but not unlit: it has a broad sheen that catches skylight
+    // along the shoulder of the tyre, and that highlight is what makes a wheel
+    // read as round.
+    const tyre = this.makeTyreMaterial();
     for (const wp of parts.wheelPositions) {
       const w = new THREE.Mesh(parts.wheel, tyre);
       w.position.copy(wp);
@@ -151,6 +156,8 @@ export class Car {
     const tail = new THREE.Mesh(parts.lightsRear, this.tailMat);
     tail.renderOrder = 9;
     this.group.add(tail);
+
+    this.buildContactShadow(parts.size);
   }
 
   private makeGlassMaterial() {
@@ -221,6 +228,79 @@ export class Car {
     });
     this.extraMats.push(m);
     return m;
+  }
+
+  private makeTyreMaterial() {
+    const m = new THREE.RawShaderMaterial({
+      name: 'car-tyre',
+      glslVersion: THREE.GLSL3,
+      uniforms: { ...vehicleUniforms() },
+      vertexShader: CAR_VERT,
+      fragmentShader: `
+        precision highp float;
+        precision highp int;
+        precision highp sampler2D;
+        in vec3 vN; in vec3 vW;
+        out vec4 outColor;
+        uniform vec3 uCameraPos, uSunDir;
+        uniform float uFogNear, uFogFar;
+        ${SKY_GLSL}
+        ${PBR_GLSL}
+        ${SKY_IBL_GLSL}
+        void main() {
+          vec3 N = normalize(vN);
+          vec3 V = normalize(vW - uCameraPos);
+          Surface s = makeSurface(vec3(0.014, 0.013, 0.015), 0.0, filterRoughness(N, 0.58), N, V);
+          vec3 R = reflect(V, N);
+          vec3 col = shadeIBL(s, skyIrradiance(N, uSunDir), skyPrefiltered(R, s.roughness, uSunDir));
+          col += shadeDirect(s, uSunDir, vec3(3.4, 1.5, 0.55));
+          float fog = smoothstep(uFogNear, uFogFar, length(vW - uCameraPos));
+          col = mix(col, skyRadiance(normalize(vec3(V.x, 0.03, V.z)), uSunDir), fog);
+          outColor = vec4(col, 1.0);
+        }
+      `,
+    });
+    this.extraMats.push(m);
+    return m;
+  }
+
+  /**
+   * Ambient-occlusion contact patch under the car.
+   *
+   * Without it the car floats: the eye needs a dark ground contact to place an
+   * object on a surface, and there are no shadow maps in this renderer.
+   */
+  private buildContactShadow(size: THREE.Vector3) {
+    const mat = new THREE.RawShaderMaterial({
+      name: 'car-contact',
+      glslVersion: THREE.GLSL3,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.NormalBlending,
+      uniforms: {},
+      vertexShader: `
+        in vec3 position; in vec2 uv;
+        uniform mat4 modelViewMatrix, projectionMatrix;
+        out vec2 vUv;
+        void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+      `,
+      fragmentShader: `
+        precision highp float;
+        in vec2 vUv; out vec4 outColor;
+        void main() {
+          vec2 d = (vUv - 0.5) * 2.0;
+          // Elongated along the car, tightest right under the sills.
+          float r = length(vec2(d.x * 1.25, d.y * 0.85));
+          float a = pow(clamp(1.0 - r, 0.0, 1.0), 1.9);
+          outColor = vec4(0.0, 0.0, 0.0, a * 0.62);
+        }
+      `,
+    });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size.x * 1.7, size.z * 1.25), mat);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.y = 0.03;
+    mesh.renderOrder = 5;
+    this.group.add(mesh);
   }
 
   /** Emissive lens: bright core, falls off toward the lens edge. */

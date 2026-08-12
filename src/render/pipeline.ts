@@ -99,7 +99,12 @@ const COMPOSITE_FRAG = /* glsl */ `${COMMON}
   uniform float uFade;         // 1 = fully faded to black (phase transitions)
 
   // --- "Ember & Char" grade ------------------------------------------------
-  const vec3 SHADOW_TINT    = vec3(0.165, 0.055, 0.031); // #2A0E08 ember-deep
+  // CHAR is cool, not brown. Real dusk is a blue-to-orange split: skylight is
+  // the cold fill, the low sun and artificial light are the warm key. Tinting
+  // shadows warm as well as highlights collapsed the whole frame onto a single
+  // amber axis, which is the signature of a stylised look rather than a
+  // photographic one. Shadows now carry the cool skylight; gold stays gold.
+  const vec3 SHADOW_TINT    = vec3(0.098, 0.122, 0.196); // cool char / skylight
   const vec3 HIGHLIGHT_TINT = vec3(0.957, 0.718, 0.251); // #F4B740 warm gold
 
   float hash21(vec2 p) {
@@ -141,7 +146,11 @@ const COMPOSITE_FRAG = /* glsl */ `${COMMON}
     // a road that was being culled rather than under-lit, and once the road
     // actually rendered that lift was what flattened the whole frame to a
     // single cream value with no black in it.
-    c = mix(c, c * SHADOW_TINT * 2.4, sw * 0.58);
+    // Multiply toward cool char, then add a small skylight lift. Deep shadows
+    // that are merely dark read as underexposure; deep shadows that are dark
+    // AND cool read as dusk.
+    c = mix(c, c * SHADOW_TINT * 3.4, sw * 0.50);
+    c += SHADOW_TINT * sw * 0.030;
     c = mix(c, c * HIGHLIGHT_TINT * 1.22, hw * 0.34);
 
     // Film toe. A real black point is the difference between "dark" and
@@ -212,7 +221,9 @@ const COMPOSITE_FRAG = /* glsl */ `${COMMON}
 
     // --- vignette ----------------------------------------------------------
     // Tightens with speed — a cheap, very effective tunnel-vision cue.
-    float vig = 1.0 - uVignette * (0.55 + uSpeed01 * 0.55) * pow(rad * 1.35, 2.1);
+    // Softer and shallower: a quarter of a phone screen was going to solid
+    // black, which is dead space on the part of the road closest to the camera.
+    float vig = 1.0 - uVignette * (0.34 + uSpeed01 * 0.42) * pow(rad * 1.18, 2.0);
     col *= clamp(vig, 0.0, 1.0);
 
     // --- grain -------------------------------------------------------------
@@ -274,7 +285,7 @@ export class PostPipeline {
   flash = 0;
   fade = 0;
   focal = new THREE.Vector2(0.5, 0.55);
-  settings: PostSettings = { bloom: 1.15, exposure: 0.72, vignette: 0.85, grain: 0.028 };
+  settings: PostSettings = { bloom: 1.15, exposure: 0.78, vignette: 0.62, grain: 0.026 };
 
   constructor(private renderer: THREE.WebGLRenderer) {
     this.sceneTarget = new THREE.WebGLRenderTarget(1, 1, {
