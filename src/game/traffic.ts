@@ -24,7 +24,7 @@ import type { CenterlinePath } from '../world/path';
 // dense enough that the gaps between packs closed up and the rhythm the
 // formations exist to create never appeared. Fewer cars over more road.
 const POOL = 50;
-const LANES = 5;
+const LANES = 7;
 /** Lane centre offsets, left (fast) to right (slow). */
 const LANE_T = Array.from({ length: LANES }, (_, i) => (i - (LANES - 1) / 2) * LANE_WIDTH);
 
@@ -55,11 +55,11 @@ const KIND_SPEC: Record<
   Kind,
   { w: number; h: number; d: number; cabin: number; speed: [number, number]; lanes: number[] }
 > = {
-  0: { w: 1.85, h: 0.72, d: 4.5, cabin: 0.55, speed: [26, 38], lanes: [0, 1, 2, 3, 4] },
-  1: { w: 2.02, h: 1.05, d: 4.9, cabin: 0.8, speed: [24, 34], lanes: [0, 1, 2, 3, 4] },
-  2: { w: 1.82, h: 0.75, d: 4.6, cabin: 0.58, speed: [25, 36], lanes: [1, 2, 3, 4] },
-  3: { w: 2.5, h: 2.5, d: 11.5, cabin: 0.2, speed: [18, 24], lanes: [3, 4] },
-  4: { w: 2.45, h: 2.2, d: 9.5, cabin: 0.3, speed: [16, 23], lanes: [3, 4] },
+  0: { w: 1.85, h: 0.72, d: 4.5, cabin: 0.55, speed: [26, 38], lanes: [0, 1, 2, 3, 4, 5, 6] },
+  1: { w: 2.02, h: 1.05, d: 4.9, cabin: 0.8, speed: [24, 34], lanes: [0, 1, 2, 3, 4, 5, 6] },
+  2: { w: 1.82, h: 0.75, d: 4.6, cabin: 0.58, speed: [25, 36], lanes: [1, 2, 3, 4, 5, 6] },
+  3: { w: 2.5, h: 2.5, d: 11.5, cabin: 0.2, speed: [18, 24], lanes: [4, 5, 6] },
+  4: { w: 2.45, h: 2.2, d: 9.5, cabin: 0.3, speed: [16, 23], lanes: [4, 5, 6] },
 };
 
 /**

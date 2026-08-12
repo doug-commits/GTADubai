@@ -54,7 +54,11 @@ export interface Corridor {
   finishS: number;
 }
 
-const LANES = 5;
+// Sheikh Zayed Road is not a 5-lane road. The carriageway through Downtown
+// runs 6-8 lanes each way plus service roads, and that width is a large part
+// of why the real corridor reads as Dubai rather than as any downtown: the
+// tarmac is enormous relative to the towers beside it.
+const LANES = 7;
 export const LANE_WIDTH = 3.65;
 export const ROAD_HALF_WIDTH = (LANES * LANE_WIDTH) / 2;
 
