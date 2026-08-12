@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no"
+    />
+    <meta name="theme-color" content="#0B0708" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Mukbang Dash — Sheikh Zayed Road</title>
+    <meta
+      name="description"
+      content="Floor it down Sheikh Zayed Road at dusk and reach the Love Mukbang branch at Dubai World Trade Centre before the clock hits zero."
+    />
+
+    <!--
+      Critical boot shell, inlined. Paints the ember gradient and the loader on
+      the first frame, before any JavaScript parses — the perceived load time is
+      what matters on a phone, and this is what keeps it under the 2s bar.
+    -->
+    <style>
+      :root {
+        --char: #0b0708;
+        --char-2: #151011;
+        --ember-deep: #2a0e08;
+        --ember: #c2410c;
+        --ember-hot: #e2571e;
+        --gold: #f4b740;
+        --gold-soft: #ffd98a;
+        --cream: #fff4e2;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: var(--char);
+        color: var(--cream);
+        font-family: ui-sans-serif, -apple-system, "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        overscroll-behavior: none;
+        touch-action: none;
+        -webkit-tap-highlight-color: transparent;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      #stage {
+        position: fixed;
+        inset: 0;
+        display: block;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+      }
+      #boot {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-content: center;
+        justify-items: center;
+        gap: 22px;
+        z-index: 100;
+        background:
+          radial-gradient(120% 70% at 50% 108%, rgba(226, 87, 30, 0.34) 0%, rgba(42, 14, 8, 0) 62%),
+          linear-gradient(180deg, #08060a 0%, #150c0c 52%, #2a0e08 100%);
+        transition: opacity 420ms ease;
+      }
+      #boot.done { opacity: 0; pointer-events: none; }
+      #boot h1 {
+        margin: 0;
+        font-size: clamp(30px, 10vw, 54px);
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        line-height: 1;
+        text-align: center;
+        background: linear-gradient(180deg, var(--gold-soft) 0%, var(--gold) 42%, var(--ember-hot) 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        filter: drop-shadow(0 0 26px rgba(226, 87, 30, 0.5));
+      }
+      #boot p {
+        margin: 0;
+        font-size: 12px;
+        letter-spacing: 0.34em;
+        text-transform: uppercase;
+        color: rgba(255, 244, 226, 0.5);
+      }
+      #bar {
+        width: min(210px, 54vw);
+        height: 2px;
+        border-radius: 2px;
+        background: rgba(255, 244, 226, 0.12);
+        overflow: hidden;
+      }
+      #bar i {
+        display: block;
+        height: 100%;
+        width: 8%;
+        border-radius: 2px;
+        background: linear-gradient(90deg, var(--ember), var(--gold));
+        box-shadow: 0 0 14px rgba(244, 183, 64, 0.8);
+        transition: width 260ms ease;
+      }
+      #nowebgl {
+        display: none;
+        max-width: 300px;
+        text-align: center;
+        font-size: 14px;
+        line-height: 1.5;
+        color: rgba(255, 244, 226, 0.7);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #boot { transition: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+
+    <div id="boot">
+      <h1>MUKBANG<br />DASH</h1>
+      <div id="bar"><i></i></div>
+      <p>Sheikh Zayed Road</p>
+      <div id="nowebgl">
+        This game needs WebGL 2. Try a recent version of Chrome, Safari or Firefox.
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

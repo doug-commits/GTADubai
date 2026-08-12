@@ -1,0 +1,475 @@
+import * as THREE from 'three';
+import { SKY_GLSL, SUN_DIR } from '../render/sky';
+import type { Corridor } from './corridor';
+import { ROAD_HALF_WIDTH } from './corridor';
+
+/**
+ * Skyline.
+ *
+ * Every building in the corridor — generic infill and named landmarks alike —
+ * is a box in ONE InstancedMesh, so the whole of Sheikh Zayed Road costs a
+ * single draw call. Landmark silhouettes (the Burj's setbacks, the twin towers,
+ * the DIFC slab) are built by stacking several boxes per landmark, which is
+ * both cheaper and closer to how those buildings actually step than any mesh we
+ * could afford to ship.
+ *
+ * Detail comes from the fragment shader: a per-instance window grid with lit
+ * and unlit cells, warm interior light, dusk fresnel, and rooftop beacons.
+ *
+ * ASSET SLOT: `public/assets/buildings/facade.webp` — a facade/window atlas.
+ */
+
+function mulberry32(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+interface BoxInstance {
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+  h: number;
+  d: number;
+  rot: number;
+  seed: number;
+  /** 0 = generic infill, 1 = landmark. Landmarks get denser, warmer glazing. */
+  kind: number;
+}
+
+const BUILDING_VERT = /* glsl */ `
+  in vec3 position;
+  in vec3 normal;
+  in mat4 instanceMatrix;
+  in vec4 aParams; // x,y,z = box size in metres, w = seed
+
+  uniform mat4 modelViewMatrix;
+  uniform mat4 projectionMatrix;
+  uniform mat4 modelMatrix;
+  uniform mat3 normalMatrix;
+
+  out vec3 vNormal;
+  out vec3 vWorld;
+  out vec3 vLocal;   // metres, origin at box centre
+  out vec3 vSize;
+  out float vSeed;
+
+  void main() {
+    vSize = aParams.xyz;
+    vSeed = aParams.w;
+    vLocal = position * aParams.xyz;
+    vec4 wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
+    vWorld = wp.xyz;
+    vNormal = normalize(mat3(instanceMatrix) * normal);
+    gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+  }
+`;
+
+const BUILDING_FRAG = /* glsl */ `
+  precision highp float;
+  in vec3 vNormal;
+  in vec3 vWorld;
+  in vec3 vLocal;
+  in vec3 vSize;
+  in float vSeed;
+  out vec4 outColor;
+
+  uniform vec3 uCameraPos;
+  uniform vec3 uSunDir;
+  uniform float uTime;
+  uniform float uFogNear;
+  uniform float uFogFar;
+  uniform sampler2D tFacade;
+  uniform float uHasFacade;
+
+  ${SKY_GLSL}
+
+  float hash31(vec3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+  }
+
+  void main() {
+    vec3 N = normalize(vNormal);
+    vec3 V = normalize(vWorld - uCameraPos);
+
+    // --- glazing grid ------------------------------------------------------
+    // Pick the two axes that lie in the face so the grid wraps the box without
+    // stretching on any side.
+    vec2 face;
+    if (abs(N.y) > 0.7)      face = vLocal.xz;
+    else if (abs(N.x) > 0.7) face = vLocal.zy;
+    else                     face = vLocal.xy;
+
+    const float FLOOR_H = 3.6;
+    const float BAY_W   = 2.9;
+    vec2 cell = vec2(floor(face.x / BAY_W), floor(face.y / FLOOR_H));
+    vec2 inCell = fract(vec2(face.x / BAY_W, face.y / FLOOR_H));
+
+    // Mullion mask: the dark frame between panes.
+    float frame = smoothstep(0.0, 0.10, inCell.x) * smoothstep(1.0, 0.90, inCell.x)
+                * smoothstep(0.0, 0.16, inCell.y) * smoothstep(1.0, 0.84, inCell.y);
+
+    float r = hash31(vec3(cell, vSeed));
+    // Occupancy: landmarks are lit up more than infill blocks.
+    float litChance = 0.34 + vSeed * 0.0 + 0.16;
+    float lit = step(1.0 - litChance, r);
+    // A handful of offices flicker / are being cleaned.
+    float flick = step(0.985, hash31(vec3(cell.yx, vSeed + 7.0)));
+    lit *= mix(1.0, 0.35 + 0.65 * step(0.5, fract(uTime * 0.7 + r * 10.0)), flick);
+
+    // Warm tungsten interiors, a few cool fluorescents.
+    vec3 warm = vec3(1.00, 0.62, 0.26);
+    vec3 cool = vec3(0.72, 0.82, 1.00);
+    vec3 interior = mix(warm, cool, step(0.86, hash31(vec3(cell + 3.0, vSeed))));
+    float bright = 0.55 + 0.85 * hash31(vec3(cell - 5.0, vSeed));
+
+    // --- surfaces ----------------------------------------------------------
+    // Dark char concrete/mullion, near-black glass that mostly mirrors the sky.
+    vec3 structure = mix(vec3(0.030, 0.026, 0.028), vec3(0.058, 0.050, 0.048), hash31(vec3(cell * 0.3, vSeed)));
+
+    vec3 R = reflect(V, N);
+    vec3 skyRefl = skyRadiance(normalize(R), uSunDir);
+    float fres = pow(1.0 - max(dot(-V, N), 0.0), 3.5);
+
+    vec3 glass = mix(vec3(0.012, 0.014, 0.020), skyRefl, clamp(0.22 + fres * 0.75, 0.0, 0.95));
+    glass += interior * lit * bright * frame * 1.35;
+
+    vec3 col = mix(structure, glass, frame);
+
+    if (uHasFacade > 0.5) {
+      col = mix(col, texture(tFacade, vec2(face.x / BAY_W, face.y / FLOOR_H) * 0.25).rgb, 0.30);
+    }
+
+    // --- lighting ----------------------------------------------------------
+    float ndl = max(dot(N, uSunDir), 0.0);
+    // Sun rakes across the west faces; everything else falls to sky ambient.
+    col += vec3(1.0, 0.52, 0.22) * ndl * 0.55;
+    col += skyRadiance(N, uSunDir) * 0.14;
+    // Rim light along the sun-facing silhouette edge — this is what separates
+    // one tower from the next against a bloomed sky.
+    col += vec3(1.0, 0.60, 0.30) * fres * max(dot(reflect(V, N), uSunDir), 0.0) * 0.9;
+
+    // --- rooftop aviation beacon ------------------------------------------
+    if (N.y > 0.7 && vSize.y > 70.0) {
+      float blink = step(0.55, fract(uTime * 0.55 + vSeed * 0.37));
+      float d = length(face) / max(vSize.x, vSize.z);
+      col += vec3(1.0, 0.10, 0.06) * blink * smoothstep(0.32, 0.0, d) * 3.5;
+    }
+
+    // --- fog ---------------------------------------------------------------
+    float dist = length(vWorld - uCameraPos);
+    float fog = smoothstep(uFogNear, uFogFar, dist);
+    vec3 fogCol = skyRadiance(normalize(vec3(V.x, 0.05, V.z)), uSunDir);
+    col = mix(col, fogCol, fog * 0.94);
+
+    outColor = vec4(col, 1.0);
+  }
+`;
+
+/** Expand a landmark archetype into stacked boxes. */
+function landmarkBoxes(
+  l: Corridor['landmarks'][number],
+  rnd: () => number,
+  out: BoxInstance[],
+) {
+  const seed = rnd() * 1000;
+  const rot = rnd() * Math.PI;
+  const push = (y: number, w: number, h: number, d: number, dx = 0, dz = 0) =>
+    out.push({ x: l.x + dx, y, z: l.z + dz, w, h, d, rot, seed, kind: 1 });
+
+  const R = l.radius;
+  switch (l.shape) {
+    case 'spire': {
+      // Setback stack: each tier steps in, which is what reads as "Burj".
+      const tiers = 7;
+      let y = 0;
+      let w = R * 2;
+      const tierH = (l.height * 0.82) / tiers;
+      for (let i = 0; i < tiers; i++) {
+        push(y + tierH / 2, w, tierH, w * 0.92);
+        y += tierH;
+        w *= 0.78;
+      }
+      push(y + l.height * 0.09, R * 0.18, l.height * 0.18, R * 0.18); // needle
+      break;
+    }
+    case 'twin': {
+      const w = R * 1.25;
+      push(l.height * 0.5, w, l.height, w * 0.85, -R * 0.75, 0);
+      push(l.height * 0.42, w * 0.9, l.height * 0.84, w * 0.8, R * 0.75, R * 0.4);
+      push(l.height * 1.02, w * 0.35, l.height * 0.08, w * 0.35, -R * 0.75, 0);
+      break;
+    }
+    case 'slab': {
+      push(l.height * 0.5, R * 2.4, l.height, R * 1.1);
+      push(l.height * 1.02, R * 2.0, l.height * 0.06, R * 0.9);
+      break;
+    }
+    case 'sail': {
+      const tiers = 4;
+      let y = 0;
+      let w = R * 2;
+      const tierH = l.height / tiers;
+      for (let i = 0; i < tiers; i++) {
+        push(y + tierH / 2, w, tierH, w * 0.55, 0, i * R * 0.18);
+        y += tierH;
+        w *= 0.84;
+      }
+      break;
+    }
+    case 'dome': {
+      push(l.height * 0.42, R * 2, l.height * 0.85, R * 2);
+      push(l.height * 0.92, R * 1.3, l.height * 0.22, R * 1.3);
+      break;
+    }
+    default: {
+      push(l.height * 0.5, R * 1.8, l.height, R * 1.6);
+      push(l.height * 1.03, R * 0.9, l.height * 0.07, R * 0.8);
+    }
+  }
+}
+
+/**
+ * Height profile along the corridor. Peaks at Downtown and Trade Centre, dips
+ * through the Al Quoz industrial stretch — the real corridor's density curve.
+ */
+function heightAt(u: number, rnd: () => number): number {
+  const downtown = Math.exp(-Math.pow((u - 0.82) * 4.4, 2));
+  const tradeCentre = Math.exp(-Math.pow((u - 0.97) * 9.0, 2));
+  const barsha = Math.exp(-Math.pow((u - 0.05) * 8.0, 2));
+  const density = 0.14 + downtown * 0.95 + tradeCentre * 0.7 + barsha * 0.35;
+  const base = 14 + density * 90;
+  // Heavy tail: most blocks are low, a few spike. Uniform heights read fake.
+  const spike = Math.pow(rnd(), 3.2) * density * 220;
+  return base + spike + rnd() * 18;
+}
+
+export class City {
+  readonly mesh: THREE.InstancedMesh;
+  readonly material: THREE.RawShaderMaterial;
+
+  constructor(corridor: Corridor) {
+    const rnd = mulberry32(0xd0ba1);
+    const boxes: BoxInstance[] = [];
+
+    // --- landmarks --------------------------------------------------------
+    for (const l of corridor.landmarks) landmarkBoxes(l, rnd, boxes);
+
+    // --- real OSM footprints, when we have them ---------------------------
+    if (corridor.buildings.length) {
+      for (const b of corridor.buildings) {
+        const h = b.h > 1 ? b.h : 12 + rnd() * 40;
+        const w = Math.max(8, b.r * 1.5);
+        boxes.push({
+          x: b.x,
+          y: h / 2,
+          z: b.z,
+          w,
+          h,
+          d: Math.max(8, b.r * 1.2),
+          rot: rnd() * Math.PI,
+          seed: rnd() * 1000,
+          kind: 0,
+        });
+      }
+    } else {
+      // --- procedural infill ---------------------------------------------
+      // Only used with the placeholder corridor; the OSM bake replaces this.
+      const path = corridor.path;
+      const STEP = 30;
+      for (let s = 0; s < path.length; s += STEP) {
+        const u = s / path.length;
+        for (const side of [-1, 1]) {
+          if (rnd() < 0.22) continue; // gaps: side roads, plots, interchanges
+          const rows = rnd() < 0.42 ? 2 : 1;
+          for (let row = 0; row < rows; row++) {
+            const off = (48 + row * 74 + rnd() * 46) * side;
+            const p = path.sample(s + (rnd() - 0.5) * STEP);
+            const h = heightAt(u, rnd) * (row === 0 ? 1 : 0.62);
+            const w = 16 + rnd() * 30;
+            const d = 16 + rnd() * 26;
+            boxes.push({
+              x: p.x + p.nx * off,
+              y: h / 2,
+              z: p.z + p.nz * off,
+              w,
+              h,
+              d,
+              rot: p.heading + (rnd() - 0.5) * 0.28,
+              seed: rnd() * 1000,
+              kind: 0,
+            });
+          }
+        }
+      }
+    }
+
+    // --- build the instanced mesh -----------------------------------------
+    const geo = new THREE.BoxGeometry(1, 1, 1);
+    this.material = new THREE.RawShaderMaterial({
+      name: 'buildings',
+      glslVersion: THREE.GLSL3,
+      uniforms: {
+        uCameraPos: { value: new THREE.Vector3() },
+        uSunDir: { value: SUN_DIR.clone() },
+        uTime: { value: 0 },
+        uFogNear: { value: 420 },
+        uFogFar: { value: 2600 },
+        tFacade: { value: null },
+        uHasFacade: { value: 0 },
+      },
+      vertexShader: BUILDING_VERT,
+      fragmentShader: BUILDING_FRAG,
+      side: THREE.FrontSide,
+    });
+
+    const mesh = new THREE.InstancedMesh(geo, this.material, boxes.length);
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const pos = new THREE.Vector3();
+    const scl = new THREE.Vector3();
+    const params = new Float32Array(boxes.length * 4);
+
+    boxes.forEach((b, i) => {
+      pos.set(b.x, b.y, b.z);
+      q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), b.rot);
+      scl.set(b.w, b.h, b.d);
+      m.compose(pos, q, scl);
+      mesh.setMatrixAt(i, m);
+      params[i * 4 + 0] = b.w;
+      params[i * 4 + 1] = b.h;
+      params[i * 4 + 2] = b.d;
+      params[i * 4 + 3] = b.seed;
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    geo.setAttribute('aParams', new THREE.InstancedBufferAttribute(params, 4));
+    mesh.frustumCulled = false;
+
+    this.mesh = mesh;
+    this.loadAssetSlot();
+  }
+
+  private loadAssetSlot() {
+    new THREE.TextureLoader().load(
+      'assets/buildings/facade.webp',
+      (tex) => {
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+        tex.colorSpace = THREE.SRGBColorSpace;
+        this.material.uniforms.tFacade.value = tex;
+        this.material.uniforms.uHasFacade.value = 1;
+      },
+      undefined,
+      () => {
+        /* procedural glazing stands in */
+      },
+    );
+  }
+
+  update(time: number, cameraPos: THREE.Vector3) {
+    this.material.uniforms.uTime.value = time;
+    (this.material.uniforms.uCameraPos.value as THREE.Vector3).copy(cameraPos);
+  }
+}
+
+/** Streetlights and overhead gantries down the corridor, as one instanced mesh. */
+export class Furniture {
+  readonly group = new THREE.Group();
+  private glowMat: THREE.RawShaderMaterial;
+
+  constructor(corridor: Corridor) {
+    const path = corridor.path;
+    const rnd = mulberry32(0x5ee7);
+
+    // --- poles ------------------------------------------------------------
+    const poleGeo = new THREE.BoxGeometry(0.34, 1, 0.34);
+    const poleMat = new THREE.MeshBasicMaterial({ color: 0x0a0809 });
+    const SPACING = 44;
+    const count = Math.floor(path.length / SPACING) * 2;
+    const poles = new THREE.InstancedMesh(poleGeo, poleMat, count);
+    const lamps: THREE.Vector3[] = [];
+
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const up = new THREE.Vector3(0, 1, 0);
+    let i = 0;
+    for (let s = 0; s < path.length && i < count; s += SPACING) {
+      const p = path.sample(s);
+      for (const side of [-1, 1]) {
+        if (i >= count) break;
+        const off = (ROAD_HALF_WIDTH + 3.4) * side;
+        const h = 11 + rnd() * 1.2;
+        q.setFromAxisAngle(up, p.heading);
+        m.compose(
+          new THREE.Vector3(p.x + p.nx * off, h / 2, p.z + p.nz * off),
+          q,
+          new THREE.Vector3(1, h, 1),
+        );
+        poles.setMatrixAt(i++, m);
+        // Lamp head hangs in over the carriageway.
+        lamps.push(new THREE.Vector3(p.x + p.nx * (off - side * 2.6), h, p.z + p.nz * (off - side * 2.6)));
+      }
+    }
+    poles.count = i;
+    poles.instanceMatrix.needsUpdate = true;
+    poles.frustumCulled = false;
+    this.group.add(poles);
+
+    // --- lamp glows -------------------------------------------------------
+    // Additive billboards; with the bloom pass these become the sodium haze
+    // that lines the corridor into the distance.
+    this.glowMat = new THREE.RawShaderMaterial({
+      name: 'lamp-glow',
+      glslVersion: THREE.GLSL3,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: { uColor: { value: new THREE.Color(1.0, 0.55, 0.2) } },
+      vertexShader: /* glsl */ `
+        in vec3 position;
+        in vec2 uv;
+        in mat4 instanceMatrix;
+        uniform mat4 modelViewMatrix;
+        uniform mat4 projectionMatrix;
+        out vec2 vUv;
+        void main() {
+          vUv = uv;
+          // Billboard: strip rotation from the model-view so the quad always faces us.
+          vec4 centre = modelViewMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+          float sx = length(instanceMatrix[0].xyz);
+          float sy = length(instanceMatrix[1].xyz);
+          centre.xy += position.xy * vec2(sx, sy);
+          gl_Position = projectionMatrix * centre;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        precision highp float;
+        in vec2 vUv;
+        out vec4 outColor;
+        uniform vec3 uColor;
+        void main() {
+          float d = length(vUv - 0.5) * 2.0;
+          float a = pow(clamp(1.0 - d, 0.0, 1.0), 2.6);
+          outColor = vec4(uColor * a * 2.4, a);
+        }
+      `,
+    });
+
+    const glowGeo = new THREE.PlaneGeometry(1, 1);
+    const glows = new THREE.InstancedMesh(glowGeo, this.glowMat, lamps.length);
+    lamps.forEach((p, idx) => {
+      m.compose(p, new THREE.Quaternion(), new THREE.Vector3(7, 7, 7));
+      glows.setMatrixAt(idx, m);
+    });
+    glows.instanceMatrix.needsUpdate = true;
+    glows.frustumCulled = false;
+    glows.renderOrder = 5;
+    this.group.add(glows);
+  }
+}

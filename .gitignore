@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.vite/
+*.log
+
+# Critic gauntlet output — screenshots and perf traces, regenerated every round.
+tools/critic/out/
+
+# Raw OSM extracts are large; the baked corridor.json is what ships.
+data/*.osm
+data/*.pbf
+data/*.overpass.json
+data/*.geojson
