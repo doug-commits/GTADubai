@@ -3,14 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Mukbang Dash — arcade dash down Sheikh Zayed Road to the Love Mukbang branch at Dubai World Trade Centre.",
+  "description": "Mukbang Dash \u2014 arcade dash down Sheikh Zayed Road to the Love Mukbang branch at Dubai World Trade Centre.",
   "scripts": {
     "dev": "vite",
     "prebuild": "node tools/check-shaders.mjs",
     "build": "vite build",
     "preview": "vite preview --port 4173 --strictPort",
     "bake": "node tools/import-osm.mjs",
-    "typecheck": "node tools/check-shaders.mjs && tsc --noEmit"
+    "typecheck": "node tools/check-shaders.mjs && tsc --noEmit",
+    "bundle": "vite build --config tools/vite.single.mjs && node tools/bundle-single.mjs"
   },
   "dependencies": {
     "three": "^0.185.1"

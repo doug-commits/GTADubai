@@ -14,3 +14,7 @@ data/*.geojson
 
 # Alternate build output used by the voucher end-to-end check.
 dist-voucher/
+
+# Single-file playable build (npm run bundle).
+dist-single/
+mukbang-dash.html
