@@ -422,6 +422,46 @@ export class Furniture {
     poles.frustumCulled = false;
     this.group.add(poles);
 
+    // --- overhead sign gantries -------------------------------------------
+    // Sheikh Zayed Road is gantry after gantry. They are cheap, and because
+    // they pass directly over the camera they give the strongest single
+    // "something just went by" cue in the scene.
+    const GANTRY_SPACING = 190;
+    const gantryCount = Math.floor(path.length / GANTRY_SPACING);
+    const gantrySpans = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshBasicMaterial({ color: 0x0d0a0b }),
+      gantryCount * 3,
+    );
+    let gi = 0;
+    for (let s = GANTRY_SPACING; s < path.length && gi < gantryCount * 3; s += GANTRY_SPACING) {
+      const p = path.sample(s);
+      q.setFromAxisAngle(up, p.heading);
+      const width = (ROAD_HALF_WIDTH + 3.6) * 2;
+      // Span.
+      m.compose(
+        new THREE.Vector3(p.x, 8.6, p.z),
+        q,
+        new THREE.Vector3(width, 1.35, 0.85),
+      );
+      gantrySpans.setMatrixAt(gi++, m);
+      // Legs.
+      for (const side of [-1, 1]) {
+        if (gi >= gantryCount * 3) break;
+        const off = (ROAD_HALF_WIDTH + 3.4) * side;
+        m.compose(
+          new THREE.Vector3(p.x + p.nx * off, 4.3, p.z + p.nz * off),
+          q,
+          new THREE.Vector3(0.72, 8.6, 0.72),
+        );
+        gantrySpans.setMatrixAt(gi++, m);
+      }
+    }
+    gantrySpans.count = gi;
+    gantrySpans.instanceMatrix.needsUpdate = true;
+    gantrySpans.frustumCulled = false;
+    this.group.add(gantrySpans);
+
     // --- lamp glows -------------------------------------------------------
     // Additive billboards; with the bloom pass these become the sodium haze
     // that lines the corridor into the distance.

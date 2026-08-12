@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { AudioEngine, CameraMode, Net, Phase, RunResult, Telemetry, Ui } from '../contracts';
 import { loadCorridor, type Corridor } from '../world/corridor';
-import { Road } from '../world/road';
+import { Road, Barriers } from '../world/road';
 import { City, Furniture } from '../world/city';
 import { Storefront, makeFinishGantry } from '../world/storefront';
 import { Sky, makeLights, SUN_DIR } from '../render/sky';
@@ -50,6 +50,7 @@ export class Game {
 
   private corridor!: Corridor;
   private road!: Road;
+  private barriers!: Barriers;
   private city!: City;
   private storefront!: Storefront;
   private car = new Car();
@@ -139,6 +140,8 @@ export class Game {
 
     this.road = new Road(this.corridor, { wetness: 0.8 });
     this.scene.add(this.road.mesh);
+    this.barriers = new Barriers(this.corridor);
+    this.scene.add(this.barriers.mesh);
     this.ui.setBootProgress(0.6);
 
     this.city = new City(this.corridor);
@@ -464,6 +467,7 @@ export class Game {
 
     this.sky.update(this.clock, this.camera.position);
     this.road.update(this.clock, this.camera.position);
+    this.barriers.update(this.camera.position);
     this.city.update(this.clock, this.camera.position);
     this.storefront.update(this.clock);
     this.traffic.setCameraUniforms(this.camera.position, this.clock);

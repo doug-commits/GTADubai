@@ -150,8 +150,9 @@ export class TopDownRig implements CameraRig {
     // Pull back along the heading rather than sitting straight overhead. The
     // resulting few degrees of tilt keeps the sides of buildings visible, which
     // is what stops the view reading as a flat map — GTA 1/2 did the same.
+    // Forward for heading θ is (-sin θ, -cos θ), so backwards is (sin θ, cos θ).
     const back = 20 + speed01 * 10;
-    camera.position.x -= Math.sin(this.heading) * back;
+    camera.position.x += Math.sin(this.heading) * back;
     camera.position.z += Math.cos(this.heading) * back;
 
     // Looking at the ground point under the focus puts the road running up the

@@ -24,7 +24,11 @@ export interface PathSample {
   nz: number;
   /** Signed curvature, 1/metres. Positive = turning right. */
   curvature: number;
-  /** Heading in radians, atan2(tx, -tz) — 0 = due north. */
+  /**
+   * Yaw in radians for an object whose local forward is -z (the three.js
+   * convention), such that setting `rotation.y = heading` points it along the
+   * tangent. 0 = due north.
+   */
   heading: number;
 }
 
@@ -106,7 +110,11 @@ export class CenterlinePath {
     const ca = this.curv[i];
     const cb = this.curv[Math.min(i + 1, this.curv.length - 1)];
     o.curvature = ca + (cb - ca) * u;
-    o.heading = Math.atan2(o.tx, -o.tz);
+    // rotation.y = θ maps local (0,0,-1) to (-sin θ, -cos θ) in xz. Solving that
+    // against the tangent gives atan2(-tx, -tz); using atan2(tx, -tz) mirrors
+    // the x axis and yaws everything 90° off on a diagonal corridor, which is
+    // what was presenting the player's car in profile in a chase camera.
+    o.heading = Math.atan2(-o.tx, -o.tz);
     return o;
   }
 

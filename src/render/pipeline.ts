@@ -117,18 +117,37 @@ const COMPOSITE_FRAG = /* glsl */ `${COMMON}
     return clamp(t, 0.0, 1.0);
   }
 
+  // Contrast about a 0.5 pivot using symmetric power curves that meet at the
+  // pivot. Monotonic on [0,1] and mathematically incapable of clipping.
+  //
+  // This replaces a naive (c - 0.5) * k + 0.5 stretch, which drove every
+  // tonemapped value below 0.045 to pure black. Wet dusk asphalt sits at
+  // 0.02-0.05, so that one line was erasing the entire road surface.
+  vec3 contrastS(vec3 c, float k) {
+    vec3 lo = 0.5 * pow(clamp(c * 2.0, 0.0, 1.0), vec3(k));
+    vec3 hi = 1.0 - 0.5 * pow(clamp((1.0 - c) * 2.0, 0.0, 1.0), vec3(k));
+    return mix(lo, hi, step(vec3(0.5), c));
+  }
+
   vec3 grade(vec3 c) {
     float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
 
     // Split tone: char in the shadows, gold in the highlights.
     float sw = pow(1.0 - clamp(lum, 0.0, 1.0), 2.0);
     float hw = pow(clamp(lum, 0.0, 1.0), 1.6);
-    c = mix(c, c * SHADOW_TINT * 3.2, sw * 0.34);
+
+    c = mix(c, c * SHADOW_TINT * 3.2, sw * 0.30);
+    // Lift the toe toward ember-deep. Tinting alone only ever multiplies
+    // shadows *down*; the lift is what makes dark surfaces read as warm
+    // charcoal instead of as holes in the frame.
+    c += SHADOW_TINT * sw * 0.085;
+
     c = mix(c, c * HIGHLIGHT_TINT * 1.18, hw * 0.30);
 
-    // Slight S-curve for contrast, then pull saturation up in the mids only —
-    // deep shadows staying desaturated is what reads as "dusk" rather than "orange filter".
-    c = clamp((c - 0.5) * 1.10 + 0.5, 0.0, 1.0);
+    c = contrastS(clamp(c, 0.0, 1.0), 1.12);
+
+    // Pull saturation up in the mids only — deep shadows staying desaturated is
+    // what reads as "dusk" rather than "orange filter".
     float l2 = dot(c, vec3(0.2126, 0.7152, 0.0722));
     float midMask = 1.0 - abs(l2 - 0.45) * 1.8;
     c = mix(vec3(l2), c, 1.0 + clamp(midMask, 0.0, 1.0) * 0.28);
@@ -149,20 +168,23 @@ const COMPOSITE_FRAG = /* glsl */ `${COMMON}
 
     // --- radial motion blur ------------------------------------------------
     // Strength ramps with speed AND with distance from the vanishing point, so
-    // the road ahead stays readable while the periphery tears past.
-    float blurAmt = uSpeed01 * uSpeed01 * 0.085 * smoothstep(0.02, 0.75, rad);
+    // the road ahead stays readable while the periphery tears past. This is the
+    // primary velocity cue in the whole image — the ground plane streaking is
+    // what makes 280 km/h feel like 280 km/h, so it is deliberately strong.
+    float blurAmt = uSpeed01 * uSpeed01 * 0.19 * smoothstep(0.0, 0.55, rad);
     vec3 col = vec3(0.0);
     float wsum = 0.0;
-    const int TAPS = 8;
+    const int TAPS = 10;
     // Dither the tap offset per-pixel to trade banding for a little noise.
-    float jitter = hash21(gl_FragCoord.xy + uTime) * 0.6;
+    float jitter = hash21(gl_FragCoord.xy + uTime) * 0.7;
     for (int i = 0; i < TAPS; i++) {
       float f = (float(i) + jitter) / float(TAPS);
       float w = 1.0 - f * 0.55;
       vec2 suv = uv - toCenter * f * blurAmt;
-      // Chromatic aberration scales with the same term, so the smear fringes
-      // like a real lens instead of looking like a separate effect.
-      float ca = f * blurAmt * 0.35 + rad * 0.0035 * (0.4 + uSpeed01);
+      // Chromatic aberration fringes the smear like a real lens. Kept subtle:
+      // at phone size, visible cyan/magenta edging reads as a rendering fault
+      // rather than as a lens, so this is a fraction of the blur, not a peer.
+      float ca = f * blurAmt * 0.10 + rad * 0.0011 * (0.3 + uSpeed01);
       vec3 s;
       s.r = texture(tScene, suv + toCenter * ca).r;
       s.g = texture(tScene, suv).g;
@@ -189,8 +211,12 @@ const COMPOSITE_FRAG = /* glsl */ `${COMMON}
     col *= clamp(vig, 0.0, 1.0);
 
     // --- grain -------------------------------------------------------------
+    // Weighted toward the mids. Grain sitting on top of near-black asphalt is
+    // the most visible artefact on a phone panel and reads as noise, not film.
+    float gl = dot(col, vec3(0.3333));
+    float grainMask = smoothstep(0.02, 0.16, gl) * (1.0 - gl * 0.45);
     float g = hash21(gl_FragCoord.xy + fract(uTime) * 431.7) - 0.5;
-    col += g * uGrain * (1.0 - dot(col, vec3(0.3333)) * 0.55);
+    col += g * uGrain * grainMask;
 
     col *= (1.0 - uFade);
 

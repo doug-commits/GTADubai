@@ -106,7 +106,7 @@ const ROAD_FRAG = /* glsl */ `
     // patching. Uniform asphalt is the single biggest "this is a game" tell.
     float grain = fbm(vec2(lat, along) * 3.1);
     float patchwork = fbm(vec2(lat * 0.06, along * 0.012));
-    vec3 asphalt = mix(vec3(0.020, 0.019, 0.022), vec3(0.052, 0.048, 0.050), grain * 0.75 + patchwork * 0.45);
+    vec3 asphalt = mix(vec3(0.048, 0.044, 0.046), vec3(0.108, 0.099, 0.096), grain * 0.75 + patchwork * 0.45);
 
     // Darker polished wheel tracks where traffic has worn the surface.
     float laneLocal = mod(lat + uHalfWidth, uLaneWidth) / uLaneWidth;
@@ -118,8 +118,20 @@ const ROAD_FRAG = /* glsl */ `
     }
 
     // Sandy verge either side of the shoulder.
-    vec3 verge = mix(vec3(0.072, 0.055, 0.043), vec3(0.105, 0.080, 0.060), fbm(vec2(lat, along) * 0.35));
+    vec3 verge = mix(vec3(0.082, 0.062, 0.048), vec3(0.125, 0.096, 0.070), fbm(vec2(lat, along) * 0.35));
     vec3 base = mix(asphalt, verge, vEdge);
+
+    // ---------------------------------------------------------------- wetness
+    // Computed before the markings are laid down: wet tarmac is much darker
+    // than dry, but the paint on top of it is not, and applying one darkening
+    // pass over both was washing the lane lines out to nothing.
+    float puddle = smoothstep(0.42, 0.78, fbm(vec2(lat * 0.22, along * 0.035)));
+    puddle = clamp(puddle + wear * 0.30, 0.0, 1.0) * (1.0 - vEdge);
+    float wet = clamp(uWetness * (0.42 + puddle * 0.68), 0.0, 1.0);
+    if (uHasRough > 0.5) {
+      wet *= 1.0 - texture(tRough, vec2(lat, along) * 0.25).r * 0.5;
+    }
+    base *= 1.0 - wet * 0.34;
 
     // ---------------------------------------------------------------- markings
     float md = 1e9;
@@ -133,25 +145,17 @@ const ROAD_FRAG = /* glsl */ `
     // Solid edge lines.
     float edgePaint = (1.0 - smoothstep(0.07, 0.14, abs(absLat - uHalfWidth + 0.25)));
     float paint = clamp(lanePaint + edgePaint, 0.0, 1.0) * (1.0 - vEdge);
-    // Paint is worn, not pristine white.
-    float paintWear = 0.55 + 0.45 * fbm(vec2(lat * 2.0, along * 0.6));
-    base = mix(base, vec3(0.62, 0.60, 0.55) * paintWear, paint * 0.9);
+    // Paint is worn, not pristine white — but it is the brightest thing on the
+    // carriageway by a wide margin, and the dashes streaking toward the camera
+    // are the main thing selling speed on the ground plane.
+    float paintWear = 0.68 + 0.32 * fbm(vec2(lat * 2.0, along * 0.6));
+    // Only lightly wet-darkened: standing water dulls paint far less than tarmac.
+    vec3 paintCol = vec3(1.02, 0.95, 0.80) * paintWear * (1.0 - wet * 0.12);
+    base = mix(base, paintCol, paint * 0.95);
 
     // Rumble strip on the hard shoulder.
     float rumble = step(uHalfWidth + 0.4, absLat) * step(absLat, uHalfWidth + 1.4) * step(mod(along, 1.2), 0.6);
     base = mix(base, base * 0.5, rumble * (1.0 - vEdge));
-
-    // ---------------------------------------------------------------- wetness
-    // Puddles pool in the wheel-track depressions and along the shoulder.
-    float puddle = smoothstep(0.42, 0.78, fbm(vec2(lat * 0.22, along * 0.035)));
-    puddle = clamp(puddle + wear * 0.30, 0.0, 1.0) * (1.0 - vEdge);
-    float wet = clamp(uWetness * (0.42 + puddle * 0.68), 0.0, 1.0);
-    if (uHasRough > 0.5) {
-      wet *= 1.0 - texture(tRough, vec2(lat, along) * 0.25).r * 0.5;
-    }
-
-    // Wet asphalt is darker and much glossier than dry.
-    base *= 1.0 - wet * 0.42;
 
     // ------------------------------------------------------------- reflection
     vec3 V = normalize(vWorld - uCameraPos);
@@ -306,6 +310,155 @@ export class Road {
 
   update(time: number, cameraPos: THREE.Vector3) {
     this.material.uniforms.uTime.value = time;
+    (this.material.uniforms.uCameraPos.value as THREE.Vector3).copy(cameraPos);
+  }
+}
+
+/**
+ * Concrete barriers down both shoulders.
+ *
+ * These exist for motion, not for collision — the car is already clamped in
+ * path space. A continuous wall a couple of metres off the wheels is the
+ * strongest parallax cue available at speed: it is the closest geometry to the
+ * camera, so it sweeps past faster than anything else on screen, and it is what
+ * stops the periphery reading as empty ground.
+ */
+export class Barriers {
+  readonly mesh: THREE.Mesh;
+  readonly material: THREE.RawShaderMaterial;
+
+  constructor(corridor: Corridor) {
+    const path = corridor.path;
+    const step = 6;
+    const rows = Math.floor(path.length / step) + 1;
+    const t0 = ROAD_HALF_WIDTH + SHOULDER;
+
+    // Per side, 3 profile points: base, top-inner, top-outer.
+    const profile = [
+      { t: 0.0, y: 0.0 },
+      { t: -0.26, y: 0.92 },
+      { t: 0.16, y: 0.98 },
+    ];
+    const cols = profile.length;
+    const sides = 2;
+
+    const positions = new Float32Array(rows * cols * sides * 3);
+    const normals = new Float32Array(rows * cols * sides * 3);
+    const uvs = new Float32Array(rows * cols * sides * 2);
+    const indices: number[] = [];
+
+    let vi = 0;
+    let ni = 0;
+    let ui = 0;
+    const sample = path.sample(0);
+
+    for (let sIdx = 0; sIdx < sides; sIdx++) {
+      const side = sIdx === 0 ? -1 : 1;
+      const base = sIdx * rows * cols;
+      for (let r = 0; r < rows; r++) {
+        const s = Math.min(r * step, path.length);
+        path.sample(s, sample);
+        for (let c = 0; c < cols; c++) {
+          const t = (t0 + profile[c].t) * side;
+          positions[vi++] = sample.x + sample.nx * t;
+          positions[vi++] = profile[c].y;
+          positions[vi++] = sample.z + sample.nz * t;
+          // Face normal points back toward the road on the inner face.
+          const inward = c === 2 ? 0.2 : -1;
+          normals[ni++] = sample.nx * inward * side;
+          normals[ni++] = c === 2 ? 1 : 0.35;
+          normals[ni++] = sample.nz * inward * side;
+          uvs[ui++] = profile[c].y;
+          uvs[ui++] = s;
+        }
+      }
+      for (let r = 0; r < rows - 1; r++) {
+        for (let c = 0; c < cols - 1; c++) {
+          const a = base + r * cols + c;
+          const b = a + 1;
+          const d = a + cols;
+          const e = d + 1;
+          // Wind each side so the road-facing surface is front-facing.
+          if (side > 0) indices.push(a, d, b, b, d, e);
+          else indices.push(a, b, d, b, e, d);
+        }
+      }
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geo.setIndex(indices);
+    geo.computeBoundingSphere();
+
+    this.material = new THREE.RawShaderMaterial({
+      name: 'barriers',
+      glslVersion: THREE.GLSL3,
+      side: THREE.DoubleSide,
+      uniforms: {
+        uCameraPos: { value: new THREE.Vector3() },
+        uSunDir: { value: SUN_DIR.clone() },
+        uFogNear: { value: 180 },
+        uFogFar: { value: 900 },
+      },
+      vertexShader: /* glsl */ `
+        in vec3 position; in vec3 normal; in vec2 uv;
+        uniform mat4 modelViewMatrix, projectionMatrix, modelMatrix;
+        out vec3 vN; out vec3 vW; out vec2 vUv;
+        void main() {
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vW = wp.xyz; vN = normalize(mat3(modelMatrix) * normal); vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        precision highp float;
+        precision highp sampler2D;
+        in vec3 vN; in vec3 vW; in vec2 vUv;
+        out vec4 outColor;
+        uniform vec3 uCameraPos, uSunDir;
+        uniform float uFogNear, uFogFar;
+        ${SKY_GLSL}
+
+        float hash21(vec2 p) {
+          p = fract(p * vec2(233.34, 851.73));
+          p += dot(p, p + 23.45);
+          return fract(p.x * p.y);
+        }
+
+        void main() {
+          vec3 N = normalize(vN);
+          vec3 V = normalize(vW - uCameraPos);
+
+          // Precast concrete, cast in segments with a visible joint every 4 m.
+          float seg = smoothstep(0.06, 0.14, abs(fract(vUv.y / 4.0) - 0.5) * 2.0 - 0.86);
+          float grime = hash21(floor(vec2(vUv.x * 8.0, vUv.y * 2.0)));
+          vec3 col = mix(vec3(0.085, 0.078, 0.074), vec3(0.135, 0.126, 0.118), grime);
+          col *= 1.0 - seg * 0.45;
+          // Road grime darkens the bottom of the wall.
+          col *= 0.55 + 0.45 * smoothstep(0.0, 0.5, vUv.x);
+
+          float ndl = max(dot(N, uSunDir), 0.0);
+          col += vec3(1.0, 0.52, 0.22) * ndl * 0.5;
+          col += skyRadiance(N, uSunDir) * 0.16;
+
+          // Warm reflected bounce from the road surface onto the lower face.
+          col += vec3(1.0, 0.45, 0.18) * (1.0 - smoothstep(0.0, 0.6, vUv.x)) * 0.10;
+
+          float dist = length(vW - uCameraPos);
+          float fog = smoothstep(uFogNear, uFogFar, dist);
+          col = mix(col, skyRadiance(normalize(vec3(V.x, 0.03, V.z)), uSunDir), fog * 0.92);
+          outColor = vec4(col, 1.0);
+        }
+      `,
+    });
+
+    this.mesh = new THREE.Mesh(geo, this.material);
+    this.mesh.frustumCulled = false;
+  }
+
+  update(cameraPos: THREE.Vector3) {
     (this.material.uniforms.uCameraPos.value as THREE.Vector3).copy(cameraPos);
   }
 }
