@@ -82,6 +82,16 @@ async function main() {
     const u = r.url();
     if (isAssetSlot404(u)) missingAssets.add(u.replace(/^.*?\/(assets|data)\//, '$1/'));
   });
+  // A dev/preview server with an SPA fallback answers a missing asset with 200
+  // + index.html rather than 404, so status alone cannot tell us whether a slot
+  // is filled. Content-type can: an image slot serving text/html is empty.
+  page.on('response', (res) => {
+    const u = res.url();
+    if (!isAssetSlot404(u)) return;
+    const ct = res.headers()['content-type'] ?? '';
+    const filled = res.status() === 200 && !ct.includes('text/html');
+    if (!filled) missingAssets.add(u.replace(/^.*?\/(assets|data)\//, '$1/'));
+  });
 
   // --- instrument the frame clock before any app code runs -----------------
   await page.addInitScript(() => {
