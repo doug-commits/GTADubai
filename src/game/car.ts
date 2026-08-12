@@ -1,5 +1,8 @@
 import * as THREE from 'three';
-import { VEHICLE_BODY_GLSL, FOG_GLSL, vehicleUniforms, makeGlowMaterial } from './vehicle-shader';
+import { vehicleUniforms, makeGlowMaterial } from './vehicle-shader';
+import { buildPlayerCar } from './models/vehicles';
+import { SKY_GLSL } from '../render/sky';
+import { PBR_GLSL, SKY_IBL_GLSL } from '../render/pbr';
 import { ROAD_HALF_WIDTH } from '../world/corridor';
 import type { CenterlinePath, PathSample } from '../world/path';
 
@@ -16,6 +19,20 @@ import type { CenterlinePath, PathSample } from '../world/path';
 export const MAX_SPEED = 76; // m/s ≈ 274 km/h
 export const BOOST_SPEED = 98; // m/s ≈ 353 km/h
 const LIMIT = ROAD_HALF_WIDTH + 1.4;
+
+/** Shared object-space vertex shader for every part of the car. */
+const CAR_VERT = /* glsl */ `
+  in vec3 position;
+  in vec3 normal;
+  uniform mat4 modelViewMatrix, projectionMatrix, modelMatrix;
+  out vec3 vN; out vec3 vW;
+  void main() {
+    vec4 wp = modelMatrix * vec4(position, 1.0);
+    vW = wp.xyz;
+    vN = normalize(mat3(modelMatrix) * normal);
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
 
 export interface CarInput {
   /** -1 (full left) .. 1 (full right) */
@@ -50,9 +67,9 @@ export class Car {
   readonly group = new THREE.Group();
   private bodyMat: THREE.RawShaderMaterial;
   private wheels: THREE.Object3D[] = [];
-  private headGlow: THREE.Group;
-  private brakeGlow: THREE.Mesh[] = [];
-  private beam: THREE.Mesh;
+  private extraMats: THREE.RawShaderMaterial[] = [];
+  private tailMat: THREE.RawShaderMaterial | null = null;
+  private beam: THREE.InstancedMesh;
 
   constructor() {
     this.bodyMat = new THREE.RawShaderMaterial({
@@ -60,183 +77,188 @@ export class Car {
       glslVersion: THREE.GLSL3,
       uniforms: {
         ...vehicleUniforms(),
-        uColor: { value: new THREE.Color(0.62, 0.055, 0.02) }, // ember red
-        uGloss: { value: 0.92 },
+        uColor: { value: new THREE.Color(0.42, 0.030, 0.012) }, // ember red basecoat
       },
-      vertexShader: /* glsl */ `
-        in vec3 position;
-        in vec3 normal;
-        uniform mat4 modelViewMatrix, projectionMatrix, modelMatrix;
-        uniform mat3 normalMatrix;
-        out vec3 vN; out vec3 vW;
-        void main() {
-          vec4 wp = modelMatrix * vec4(position, 1.0);
-          vW = wp.xyz;
-          vN = normalize(mat3(modelMatrix) * normal);
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
+      vertexShader: CAR_VERT,
       fragmentShader: /* glsl */ `
         precision highp float;
+        precision highp int;
+        precision highp sampler2D;
         in vec3 vN; in vec3 vW;
         out vec4 outColor;
         uniform vec3 uCameraPos, uSunDir, uColor;
-        uniform float uGloss, uFogNear, uFogFar;
-        ${VEHICLE_BODY_GLSL}
-        ${FOG_GLSL}
+        uniform float uFogNear, uFogFar;
+        ${SKY_GLSL}
+        ${PBR_GLSL}
+        ${SKY_IBL_GLSL}
         void main() {
           vec3 N = normalize(vN);
           vec3 V = normalize(vW - uCameraPos);
-          vec3 col = carPaint(N, V, uColor, uSunDir, uGloss, 0.7);
-          col = applyFog(col, vW, uCameraPos, uSunDir, uFogNear, uFogFar);
+
+          // Metallic basecoat under a clearcoat. The two-lobe response is what
+          // separates automotive paint from coloured plastic: a broad soft
+          // sheen from the flake, and a tight hard reflection from the lacquer.
+          Surface s = makeSurface(uColor, 0.75, filterRoughness(N, 0.26), N, V);
+          s.clearcoat = 1.0;
+          s.clearcoatRoughness = 0.055;
+
+          vec3 R = reflect(V, N);
+          vec3 col = shadeIBL(s, skyIrradiance(N, uSunDir), skyPrefiltered(R, s.roughness, uSunDir));
+          col += shadeDirect(s, uSunDir, vec3(3.4, 1.5, 0.55));
+
+          float fog = smoothstep(uFogNear, uFogFar, length(vW - uCameraPos));
+          col = mix(col, skyRadiance(normalize(vec3(V.x, 0.03, V.z)), uSunDir), fog);
           outColor = vec4(col, 1.0);
         }
       `,
     });
 
     this.buildMesh();
-    this.headGlow = new THREE.Group();
-    this.group.add(this.headGlow);
-    this.beam = this.buildBeams();
-    this.group.add(this.beam);
+    this.beam = this.buildLightPool();
   }
 
   /**
-   * Low-poly performance coupé assembled from scaled boxes. Silhouette does the
-   * work — long nose, low cabin set back, wide haunches, visible wheels.
+   * Real coupé geometry from `models/vehicles.ts` — tapered greenhouse, wheel
+   * arches cut into the flanks, recessed light lenses. The hero car is on
+   * screen for the entire run, so it is the one place where silhouette is
+   * worth spending on.
    */
   private buildMesh() {
-    const add = (
-      w: number,
-      h: number,
-      d: number,
-      x: number,
-      y: number,
-      z: number,
-      mat: THREE.Material = this.bodyMat,
-      taperTop = 1,
-    ) => {
-      const g = new THREE.BoxGeometry(w, h, d);
-      if (taperTop !== 1) {
-        // Pull the top face in to fake a tapered greenhouse / wedge nose.
-        const pos = g.attributes.position as THREE.BufferAttribute;
-        for (let i = 0; i < pos.count; i++) {
-          if (pos.getY(i) > 0) {
-            pos.setX(i, pos.getX(i) * taperTop);
-            pos.setZ(i, pos.getZ(i) * taperTop);
-          }
-        }
-        pos.needsUpdate = true;
-        g.computeVertexNormals();
-      }
-      const m = new THREE.Mesh(g, mat);
-      m.position.set(x, y, z);
-      this.group.add(m);
-      return m;
-    };
+    const parts = buildPlayerCar();
 
-    const glass = new THREE.RawShaderMaterial({
+    const glassMat = this.makeGlassMaterial();
+    const trimMat = this.makeTrimMaterial();
+
+    this.group.add(new THREE.Mesh(parts.body, this.bodyMat));
+    this.group.add(new THREE.Mesh(parts.glass, glassMat));
+    this.group.add(new THREE.Mesh(parts.trim, trimMat));
+
+    const tyre = new THREE.MeshBasicMaterial({ color: 0x07060a });
+    for (const wp of parts.wheelPositions) {
+      const w = new THREE.Mesh(parts.wheel, tyre);
+      w.position.copy(wp);
+      this.group.add(w);
+      this.wheels.push(w);
+    }
+
+    // Light lenses are real geometry set into the body, so they catch the
+    // silhouette rather than floating as decals.
+    const head = new THREE.Mesh(parts.lightsFront, this.makeLensMaterial(new THREE.Color(1.0, 0.88, 0.70), 3.2));
+    head.renderOrder = 9;
+    this.group.add(head);
+
+    this.tailMat = this.makeLensMaterial(new THREE.Color(1.0, 0.10, 0.05), 2.2);
+    const tail = new THREE.Mesh(parts.lightsRear, this.tailMat);
+    tail.renderOrder = 9;
+    this.group.add(tail);
+  }
+
+  private makeGlassMaterial() {
+    const m = new THREE.RawShaderMaterial({
       name: 'car-glass',
       glslVersion: THREE.GLSL3,
       uniforms: { ...vehicleUniforms() },
-      vertexShader: /* glsl */ `
-        in vec3 position; in vec3 normal;
-        uniform mat4 modelViewMatrix, projectionMatrix, modelMatrix;
-        out vec3 vN; out vec3 vW;
-        void main() {
-          vec4 wp = modelMatrix * vec4(position, 1.0);
-          vW = wp.xyz; vN = normalize(mat3(modelMatrix) * normal);
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: /* glsl */ `
+      vertexShader: CAR_VERT,
+      fragmentShader: `
         precision highp float;
+        precision highp int;
+        precision highp sampler2D;
         in vec3 vN; in vec3 vW;
         out vec4 outColor;
         uniform vec3 uCameraPos, uSunDir;
         uniform float uFogNear, uFogFar;
-        ${VEHICLE_BODY_GLSL}
-        ${FOG_GLSL}
+        ${SKY_GLSL}
+        ${PBR_GLSL}
+        ${SKY_IBL_GLSL}
         void main() {
           vec3 N = normalize(vN);
           vec3 V = normalize(vW - uCameraPos);
+          // Tinted glass: almost no diffuse, a tight specular, strong mirror.
+          Surface s = makeSurface(vec3(0.008, 0.010, 0.016), 0.0, 0.055, N, V);
           vec3 R = reflect(V, N);
-          float fres = pow(1.0 - max(dot(-V, N), 0.0), 3.0);
-          vec3 col = mix(vec3(0.008, 0.010, 0.016), skyRadiance(normalize(R), uSunDir), 0.30 + fres * 0.66);
-          col = applyFog(col, vW, uCameraPos, uSunDir, uFogNear, uFogFar);
+          vec3 col = shadeIBL(s, skyIrradiance(N, uSunDir), skyPrefiltered(R, s.roughness, uSunDir));
+          col += shadeDirect(s, uSunDir, vec3(3.4, 1.5, 0.55));
+          float fog = smoothstep(uFogNear, uFogFar, length(vW - uCameraPos));
+          col = mix(col, skyRadiance(normalize(vec3(V.x, 0.03, V.z)), uSunDir), fog);
           outColor = vec4(col, 1.0);
         }
       `,
     });
-    const rubber = new THREE.MeshBasicMaterial({ color: 0x08070a });
-    const rim = new THREE.MeshBasicMaterial({ color: 0x5a5350 });
-
-    // Body: nose, main tub, haunches, cabin.
-    add(1.86, 0.30, 1.5, 0, 0.50, -1.62, this.bodyMat, 0.86); // nose
-    add(1.94, 0.52, 2.5, 0, 0.56, -0.15); // main tub
-    add(2.02, 0.44, 1.6, 0, 0.52, 1.28); // rear haunches
-    add(1.58, 0.44, 1.72, 0, 0.92, 0.18, glass, 0.72); // greenhouse
-    add(1.90, 0.14, 0.42, 0, 1.02, 1.86, this.bodyMat); // ducktail spoiler
-    add(1.96, 0.20, 0.30, 0, 0.40, 2.02, this.bodyMat); // rear diffuser
-    // Side skirts read as the car's waistline at speed.
-    add(0.14, 0.18, 3.0, 0.98, 0.30, 0.1, this.bodyMat);
-    add(0.14, 0.18, 3.0, -0.98, 0.30, 0.1, this.bodyMat);
-
-    for (const [x, z] of [
-      [0.92, -1.28],
-      [-0.92, -1.28],
-      [0.96, 1.42],
-      [-0.96, 1.42],
-    ]) {
-      const wheel = new THREE.Group();
-      const tyre = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.36, 0.26, 14), rubber);
-      tyre.rotation.z = Math.PI / 2;
-      const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.21, 0.28, 10), rim);
-      hub.rotation.z = Math.PI / 2;
-      wheel.add(tyre, hub);
-      wheel.position.set(x, 0.36, z);
-      this.group.add(wheel);
-      this.wheels.push(wheel);
-    }
+    this.extraMats.push(m);
+    return m;
   }
 
-  /** Headlight cones + taillight bars, all additive. */
-  private buildBeams(): THREE.Mesh {
-    const headMat = makeGlowMaterial(new THREE.Color(1.0, 0.86, 0.66), 2.2, 3.0);
-    const tailMat = makeGlowMaterial(new THREE.Color(1.0, 0.09, 0.05), 2.4, 2.6);
-    const quad = new THREE.PlaneGeometry(1, 1);
+  private makeTrimMaterial() {
+    const m = new THREE.RawShaderMaterial({
+      name: 'car-trim',
+      glslVersion: THREE.GLSL3,
+      uniforms: { ...vehicleUniforms() },
+      vertexShader: CAR_VERT,
+      fragmentShader: `
+        precision highp float;
+        precision highp int;
+        precision highp sampler2D;
+        in vec3 vN; in vec3 vW;
+        out vec4 outColor;
+        uniform vec3 uCameraPos, uSunDir;
+        uniform float uFogNear, uFogFar;
+        ${SKY_GLSL}
+        ${PBR_GLSL}
+        ${SKY_IBL_GLSL}
+        void main() {
+          vec3 N = normalize(vN);
+          vec3 V = normalize(vW - uCameraPos);
+          // Satin black plastic and dark anodised metal.
+          Surface s = makeSurface(vec3(0.022, 0.021, 0.023), 0.25, filterRoughness(N, 0.45), N, V);
+          vec3 R = reflect(V, N);
+          vec3 col = shadeIBL(s, skyIrradiance(N, uSunDir), skyPrefiltered(R, s.roughness, uSunDir));
+          col += shadeDirect(s, uSunDir, vec3(3.4, 1.5, 0.55));
+          float fog = smoothstep(uFogNear, uFogFar, length(vW - uCameraPos));
+          col = mix(col, skyRadiance(normalize(vec3(V.x, 0.03, V.z)), uSunDir), fog);
+          outColor = vec4(col, 1.0);
+        }
+      `,
+    });
+    this.extraMats.push(m);
+    return m;
+  }
 
-    const mk = (mat: THREE.RawShaderMaterial, x: number, y: number, z: number, sc: number) => {
-      // Clone the geometry per light: `aTint` is a per-geometry attribute, so a
-      // shared BufferGeometry would make the brake lights drive the headlights.
-      const im = new THREE.InstancedMesh(quad.clone(), mat, 1);
-      const m = new THREE.Matrix4();
-      m.compose(new THREE.Vector3(0, 0, 0), new THREE.Quaternion(), new THREE.Vector3(sc, sc, sc));
-      im.setMatrixAt(0, m);
-      im.instanceMatrix.needsUpdate = true;
-      im.geometry.setAttribute(
-        'aTint',
-        new THREE.InstancedBufferAttribute(new Float32Array([1, 1, 1, 1]), 4),
-      );
-      im.position.set(x, y, z);
-      im.frustumCulled = false;
-      im.renderOrder = 10;
-      this.group.add(im);
-      return im;
-    };
+  /** Emissive lens: bright core, falls off toward the lens edge. */
+  private makeLensMaterial(color: THREE.Color, gain: number) {
+    const m = new THREE.RawShaderMaterial({
+      name: 'car-lens',
+      glslVersion: THREE.GLSL3,
+      uniforms: {
+        ...vehicleUniforms(),
+        uColor: { value: color },
+        uGain: { value: gain },
+        uBrake: { value: 0 },
+      },
+      vertexShader: CAR_VERT,
+      fragmentShader: `
+        precision highp float;
+        precision highp sampler2D;
+        in vec3 vN; in vec3 vW;
+        out vec4 outColor;
+        uniform vec3 uCameraPos, uColor;
+        uniform float uGain, uBrake;
+        void main() {
+          vec3 N = normalize(vN);
+          vec3 V = normalize(vW - uCameraPos);
+          // Face-on lenses read brightest, exactly like a real reflector.
+          float facing = pow(max(dot(-V, N), 0.0), 0.6);
+          outColor = vec4(uColor * uGain * (0.45 + facing) * (1.0 + uBrake), 1.0);
+        }
+      `,
+    });
+    this.extraMats.push(m);
+    return m;
+  }
 
-    mk(headMat, 0.66, 0.52, -2.3, 1.5);
-    mk(headMat, -0.66, 0.52, -2.3, 1.5);
-    const b1 = mk(tailMat, 0.62, 0.62, 2.2, 1.2);
-    const b2 = mk(tailMat, -0.62, 0.62, 2.2, 1.2);
-    this.brakeGlow.push(b1, b2);
-
-    // Forward light pool cast onto the road, flat on the ground plane.
-    // Soft and dim: against a correctly dark road this reads as a headlight
-    // wash, whereas the previous gain painted a hard white rectangle on the
-    // tarmac ahead of the car.
-    const poolMat = makeGlowMaterial(new THREE.Color(1.0, 0.82, 0.60), 3.2, 0.34, true);
-    const pool = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), poolMat, 1);
+  /** Soft headlight wash thrown forward onto the tarmac. */
+  private buildLightPool(): THREE.InstancedMesh {
+    const mat = makeGlowMaterial(new THREE.Color(1.0, 0.82, 0.60), 3.2, 0.34, true);
+    const pool = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), mat, 1);
     const m = new THREE.Matrix4();
     m.compose(
       new THREE.Vector3(0, 0, 0),
@@ -355,12 +377,8 @@ export class Car {
     const spin = time * this.speed * 0.6;
     for (const w of this.wheels) w.rotation.x = spin;
 
-    for (const b of this.brakeGlow) {
-      const tint = b as unknown as THREE.InstancedMesh;
-      const attr = tint.geometry.getAttribute('aTint') as THREE.InstancedBufferAttribute;
-      attr.setW(0, 0.45);
-      attr.needsUpdate = true;
-    }
+    // Brake lights come up under braking / lift.
+    if (this.tailMat) this.tailMat.uniforms.uBrake.value = this.stun > 0 ? 1.0 : 0.0;
   }
 
   setCameraUniforms(cameraPos: THREE.Vector3, time: number) {

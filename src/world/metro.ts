@@ -37,6 +37,10 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
  *  • The station is built about its own origin (centred on x = 0, z = 0, road
  *    at y = 0) so the caller only needs a translate + heading to drop it on a
  *    chainage.
+ *  • FOOTPRINTS, for whoever places these: piers occupy x = +-3 m about the run
+ *    centreline, and station legs touch down at x = +-8 m about the station
+ *    centreline (the shell itself overhangs to +-15 m, harmlessly, at height).
+ *    Anything the player can drive into needs to clear those two numbers.
  *  • Geometry is non-indexed with position / normal / uv and merged so each
  *    output is a single draw call. UVs: u across the section in metres,
  *    v = distance along the run in metres — a shader can lay concrete segment
@@ -347,6 +351,21 @@ function buildPier(z: number): THREE.BufferGeometry {
 const STATION_LEN = 128;
 const STATION_RINGS = 15;
 const STATION_SEC = 16;
+/** ~30 m across, so the shell overhangs the carriageway rather than lining it. */
+const STATION_HALF_W = 15;
+const STATION_HALF_H = 8.6;
+/** Flattening below the centreline — the belly where the platform floor sits. */
+const STATION_BELLY = 0.82;
+/**
+ * Where the legs land, each side of the station centreline.
+ *
+ * FOOTPRINT CONTRACT: the shell overhangs to +-15 m but the feet touch down at
+ * only +-8 m, so a station dropped on an alignment offset from the carriageway
+ * keeps its columns off the tarmac while the box still looms over the traffic.
+ * Real elevated stations do the same — columns hug the guideway and the
+ * concourse cantilevers out. Keep +-8 m clear of the running lanes when placing.
+ */
+const STATION_FOOT_X = 8;
 
 /** Scale and centre-height of the shell section at t along its length. */
 function stationProfile(t: number): { s: number; cy: number } {
@@ -360,9 +379,9 @@ function stationProfile(t: number): { s: number; cy: number } {
 function stationSection(): P2[] {
   // Fuller than an ellipse, with a slightly flattened belly where the glazing
   // and the platform floor are.
-  return superellipse(STATION_SEC, 13, 8.6, 2.6).map((p) => ({
+  return superellipse(STATION_SEC, STATION_HALF_W, STATION_HALF_H, 2.6).map((p) => ({
     x: p.x,
-    y: p.y < 0 ? p.y * 0.82 : p.y,
+    y: p.y < 0 ? p.y * STATION_BELLY : p.y,
   }));
 }
 
@@ -384,9 +403,9 @@ function buildStation(): { solid: THREE.BufferGeometry; glow: THREE.BufferGeomet
       const z = sz * 34;
       const t = (z + STATION_LEN / 2) / STATION_LEN;
       const { s, cy } = stationProfile(t);
-      const topX = sx * 13 * s * 0.8;
-      const topY = cy - 8.6 * 0.82 * s * 0.72;
-      const baseX = sx * 15.5;
+      const topX = sx * STATION_HALF_W * s * 0.8;
+      const topY = cy - STATION_HALF_H * STATION_BELLY * s * 0.72;
+      const baseX = sx * STATION_FOOT_X;
       const foot = ellipse(6, 1.5, 1.5);
       const mid = ellipse(6, 1.1, 1.1);
       const head = ellipse(6, 0.85, 0.85);
