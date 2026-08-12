@@ -11,3 +11,6 @@ data/*.osm
 data/*.pbf
 data/*.overpass.json
 data/*.geojson
+
+# Alternate build output used by the voucher end-to-end check.
+dist-voucher/

@@ -2008,12 +2008,17 @@ body {
   .mkd-printsheet .pv-code {
     margin-top: 2mm;
     font-family: var(--font-mono);
-    font-size: 26pt;
+    /* Sized to keep a 20-character code on one line even on a narrow sheet.
+       A voucher code that wraps mid-string invites a misread at the till, so
+       nowrap is a correctness requirement here, not a style preference. */
+    font-size: 21pt;
     font-weight: 700;
-    letter-spacing: 0.24em;
-    text-indent: 0.24em;
+    letter-spacing: 0.14em;
+    text-indent: 0.14em;
     line-height: 1.15;
-    word-break: break-all;
+    white-space: nowrap;
+    word-break: normal;
+    overflow-wrap: normal;
   }
 
   .mkd-printsheet .pv-meta {
