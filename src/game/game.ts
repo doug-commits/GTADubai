@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import type { AudioEngine, CameraMode, Net, Phase, RunResult, Telemetry, Ui } from '../contracts';
 import { loadCorridor, type Corridor } from '../world/corridor';
 import { Road, Barriers } from '../world/road';
-import { City, Furniture, Landmarks } from '../world/city';
+import { City, Landmarks } from '../world/city';
+import { MetroLine } from '../world/metro-line';
 import { Storefront, makeFinishGantry } from '../world/storefront';
 import { Sky, makeLights, SUN_DIR } from '../render/sky';
 import { PostPipeline } from '../render/pipeline';
@@ -53,6 +54,7 @@ export class Game {
   private barriers!: Barriers;
   private city!: City;
   private landmarks!: Landmarks;
+  private metroLine!: MetroLine;
   private storefront!: Storefront;
   private car = new Car();
   private traffic!: Traffic;
@@ -149,7 +151,10 @@ export class Game {
     this.scene.add(this.city.mesh);
     this.landmarks = new Landmarks(this.corridor);
     this.scene.add(this.landmarks.group);
-    this.scene.add(new Furniture(this.corridor).group);
+    // Metro viaduct, stations, palms, light masts and bilingual gantries.
+    // Replaces the generic poles/gantries that Furniture used to supply.
+    this.metroLine = new MetroLine(this.corridor);
+    this.scene.add(this.metroLine.group);
     this.ui.setBootProgress(0.85);
 
     this.storefront = new Storefront(this.corridor);
@@ -542,6 +547,7 @@ export class Game {
     this.barriers.update(this.camera.position);
     this.city.update(this.clock, this.camera.position);
     this.landmarks.update(this.clock, this.camera.position);
+    this.metroLine.update(this.clock, this.camera.position);
     this.storefront.update(this.clock);
     this.traffic.setCameraUniforms(this.camera.position, this.clock);
     this.car.setCameraUniforms(this.camera.position, this.clock);

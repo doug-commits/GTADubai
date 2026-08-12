@@ -1091,10 +1091,12 @@ export function arabicIsApproximated(): boolean {
  * "could be anywhere" look we are removing. Height 12-15 m, base ~0.19 m
  * diameter, ~2.6 m outreach, flat rectangular LED lantern.
  *
- * Local frame: column at the origin, arm reaching toward +X. Place the mast on
- * the verge and mirror in X for the other carriageway.
+ * Local frame: column at the origin, arm reaching toward +X. A mast on the -X
+ * verge therefore needs no adjustment; one on the +X verge should be turned
+ * with `rotation.y = Math.PI`, NOT `scale.x = -1` — a negative scale inverts
+ * triangle winding and the whole column vanishes under backface culling.
  *
- * Budget: 172 tris. Limit 250.
+ * Budget: 184 tris. Limit 250.
  */
 export function buildLightMast(heightM = 14): { structure: THREE.BufferGeometry; lampPosition: THREE.Vector3 } {
   const H = clamp(heightM, 8, 20);
@@ -1177,6 +1179,7 @@ export function buildLightMast(heightM = 14): { structure: THREE.BufferGeometry;
 export function buildPalm(seed: number): {
   trunk: THREE.BufferGeometry;
   fronds: THREE.BufferGeometry;
+  /** Trunk height to the crown, metres. The fronds reach ~2-4 m beyond it. */
   height: number;
 } {
   const rnd = mulberry32((seed | 0) >>> 0 || 1);
@@ -1211,9 +1214,12 @@ export function buildPalm(seed: number): {
     const ring: V3[] = [];
     for (let j = 0; j < SIDES; j++) {
       const th = phase + (j / SIDES) * Math.PI * 2;
-      // Alternating boss/recess: this is what turns plain faceting into the
-      // rhomboid scar pattern.
-      const boss = (i + j) % 2 === 0 ? 1.075 : 0.945;
+      // Alternating boss/recess. Kept deliberately shallow: at 8 bands over a
+      // 10 m trunk each facet is ~1.25 m tall, so a strong offset stops reading
+      // as scars and starts reading as lumpy horizontal banding. Its job is
+      // only to break the silhouette and stop the trunk being a clean cylinder
+      // — the bark texture carries the actual scar courses.
+      const boss = (i + j) % 2 === 0 ? 1.035 : 0.968;
       ring.push([lx + Math.cos(th) * r * boss, y, lz + Math.sin(th) * r * boss]);
     }
     ringPts.push(ring);
@@ -1226,21 +1232,32 @@ export function buildPalm(seed: number): {
       const j2 = (j + 1) % SIDES;
       const t0 = i / (RINGS - 1);
       const t1 = (i + 1) / (RINGS - 1);
-      // Recessed quads get the darker colour, so the pattern reads even on a
-      // flat untextured material.
-      const lit = (i + j) % 2 === 0;
+      // Recessed quads get the darker colour so the pattern still reads on a
+      // flat untextured material, but gently — this tints the bark map rather
+      // than competing with it, and the trunk also darkens toward the base
+      // where the old scars are weathered and shaded.
+      const lit = (i + j) % 2 === 0 ? 0.62 : 0.34;
+      const k = lit * (0.72 + 0.28 * t0);
       const col: V3 = [
-        lerp(C_TRUNK_LO[0], C_TRUNK_HI[0], lit ? 0.85 : 0.15),
-        lerp(C_TRUNK_LO[1], C_TRUNK_HI[1], lit ? 0.85 : 0.15),
-        lerp(C_TRUNK_LO[2], C_TRUNK_HI[2], lit ? 0.85 : 0.15),
+        lerp(C_TRUNK_LO[0], C_TRUNK_HI[0], k),
+        lerp(C_TRUNK_LO[1], C_TRUNK_HI[1], k),
+        lerp(C_TRUNK_LO[2], C_TRUNK_HI[2], k),
       ];
-      // uv.x wraps once around, uv.y counts scar courses so a diamond bark
-      // texture tiles onto the same lattice the geometry already describes.
-      tm.quad(a[j]!, a[j2]!, b[j2]!, b[j]!, col, [
-        [j / SIDES, t0 * (RINGS - 1) * 0.5],
-        [(j + 1) / SIDES, t0 * (RINGS - 1) * 0.5],
-        [(j + 1) / SIDES, t1 * (RINGS - 1) * 0.5],
-        [j / SIDES, t1 * (RINGS - 1) * 0.5],
+      // uv.x wraps once around; uv.y is in units of 0.56 m, which is 4 courses
+      // of the bark tile, i.e. ~14 cm per scar. Real frond-base scars are that
+      // fine, and 8 geometric bands over a 10 m trunk can never be. So the two
+      // scales divide the work: geometry breaks the silhouette and catches the
+      // light, the texture supplies the actual scar courses.
+      const v0 = (t0 * trunkH) / 0.56;
+      const v1 = (t1 * trunkH) / 0.56;
+      // Wound up-then-around (not around-then-up): these rings run
+      // counter-clockwise seen from +Y, so the other order puts the front face
+      // — and the flat normal derived from it — on the INSIDE of the trunk.
+      tm.quad(a[j]!, b[j]!, b[j2]!, a[j2]!, col, [
+        [j / SIDES, v0],
+        [j / SIDES, v1],
+        [(j + 1) / SIDES, v1],
+        [(j + 1) / SIDES, v0],
       ]);
     }
   }
@@ -1402,18 +1419,20 @@ export function buildMedianPlanter(lengthM: number): THREE.BufferGeometry {
       const col = soil ? C_SOIL : i % 3 === 1 ? C_CONCRETE_DK : C_CONCRETE;
       const ua = (a[0] - xMin) / xSpan;
       const ub = (b[0] - xMin) / xSpan;
-      // Wound so the outward normal points away from the planter core.
+      // Wound along +Z first, then across the profile, so the face normal comes
+      // out pointing away from the planter core. The profile runs left to right
+      // (-X to +X); taking the profile step first flips every face inward.
       m.quad(
         [a[0], a[1], z0],
-        [b[0], b[1], z0],
-        [b[0], b[1], z1],
         [a[0], a[1], z1],
+        [b[0], b[1], z1],
+        [b[0], b[1], z0],
         col,
         [
           [ua, z0 * 0.25],
-          [ub, z0 * 0.25],
-          [ub, z1 * 0.25],
           [ua, z1 * 0.25],
+          [ub, z1 * 0.25],
+          [ub, z0 * 0.25],
         ],
       );
     }

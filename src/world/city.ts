@@ -534,10 +534,10 @@ export class Landmarks {
       const mat = this.makeMaterial();
       const mesh = new THREE.Mesh(built.geometry, mat);
 
-      // Landmarks are modelled at their true height; scale only if the spec
-      // and the model disagree, so the Burj stays 828 m tall.
-      const scale = built.height > 1 ? l.height / built.height : 1;
-      mesh.scale.setScalar(scale);
+      // No rescaling. landmarks.ts already builds each silhouette at its real
+      // published height, so dividing the spec height by the model height was
+      // introducing error rather than correcting it — it was stretching some
+      // towers by 5-8x where the two figures disagreed.
       mesh.position.set(l.x, 0, l.z);
       // Face the corridor, with a little variation so the row is not uniform.
       const p = corridor.path.sample(l.s);
@@ -547,7 +547,6 @@ export class Landmarks {
 
       if (built.emissive) {
         const em = new THREE.Mesh(built.emissive, this.makeEmissiveMaterial());
-        em.scale.copy(mesh.scale);
         em.position.copy(mesh.position);
         em.rotation.copy(mesh.rotation);
         em.frustumCulled = true;

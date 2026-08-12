@@ -156,7 +156,10 @@ function lensSection(halfLen: number, halfWid: number, arcSegs: number, rot: num
   const out: P2[] = [];
   for (let s = 0; s < 2; s++) {
     const sign = s === 0 ? 1 : -1;
-    for (let i = 0; i <= arcSegs; i++) {
+    // Half-open: each arc starts on a tip and stops just short of the other, so
+    // the two tips are emitted once each. Closing both arcs would duplicate
+    // them and loft a pair of zero-area quads up the whole tower.
+    for (let i = 0; i < arcSegs; i++) {
       const a = phi + (i / arcSegs) * (Math.PI - 2 * phi);
       const x = Math.cos(a) * R * sign;
       const z = (Math.sin(a) * R - d) * sign;
@@ -406,9 +409,9 @@ function buildBurjKhalifa(): LandmarkMesh {
   const SETBACKS = 27;
   const NOSE_SEGS = 4; // facets across each wing's rounded end
 
-  // Base dimensions chosen to land on the published footprint: wings reaching
-  // ~80 m from the centre give a ~139 m span across two wing tips and roughly
-  // 7.5k m2 of plate, which is the tower as built.
+  // Sized off the published footprint: wings reaching ~80 m from the centre put
+  // the span across two wing tips at ~140 m, which is the tower as built. Get
+  // this wrong and the Burj reads as a thin needle instead of a mountain.
   const coreAt = (y: number): number => 23 - 9 * (y / BODY_TOP); // hex core, mild taper
   const wingHalfAt = (y: number): number => 15 - 6.5 * (y / BODY_TOP);
 
@@ -460,11 +463,21 @@ function buildBurjKhalifa(): LandmarkMesh {
   // Spire: a single slender pinnacle continuing the core, no wings.
   const spire = needle(BODY_TOP - 2, H - BODY_TOP + 2, 9, 0.4, 4, 6);
 
-  // Emissive: the vertical LED spine on the spire plus the topmost setback
-  // bands, which is what actually reads from the road at dusk.
+  // Emissive bands must use the plan that is actually in force at their height:
+  // `reach` has been fully decremented by now, so reusing it would sink the
+  // bands inside the facade. Rings are in ascending y, so take the last one at
+  // or below the band.
+  const sectionAt = (y: number): P2[] => {
+    let best = rings[0];
+    for (const r of rings) if (r[0].y <= y) best = r;
+    return best.map((p) => ({ x: p.x, z: p.z }));
+  };
+
+  // The upper setback bands and the spire beacon are what actually read from
+  // the road at dusk.
   const em: THREE.BufferGeometry[] = [
-    bandAt(section(reach, 560), 560, 5, 0.4),
-    bandAt(section(reach, 600), 600, 4, 0.4),
+    bandAt(sectionAt(560), 560, 5, 0.4),
+    bandAt(sectionAt(600), 600, 4, 0.4),
     place(new THREE.OctahedronGeometry(3.2), 0, H - 6, 0),
   ];
 
@@ -695,11 +708,11 @@ function buildBurjAlArab(): LandmarkMesh {
 
   const section = (t: number): P2[] => {
     const s = Math.pow(1 - t, 0.55) * 0.86 + 0.14; // plan shrinks with height
-    const apexZ = -58 * s;
-    const tipZ = 34 * s;
+    const apexZ = -50 * s; // the mast spine, at the back of the V
+    const tipZ = 30 * s; // where the two wings end and the membrane starts
     const halfW = 45 * s;
     // Membrane billow: none at the base, fullest around mid-height.
-    const bulge = 26 * Math.sin(Math.PI * Math.min(1, t * 1.15)) * s + 4 * s;
+    const bulge = 24 * Math.sin(Math.PI * Math.min(1, t * 1.15)) * s + 4 * s;
     const pts: P2[] = [{ x: 0, z: apexZ }];
     pts.push({ x: halfW * 0.55, z: apexZ * 0.1 }); // leg, mast side to tip
     pts.push({ x: halfW, z: tipZ });
@@ -770,31 +783,32 @@ function buildDifcGate(): LandmarkMesh {
   // Elevation profile: splayed feet, battered legs, a corbelled cornice near
   // the top and clipped upper corners. Squat and heavy — the opposite of every
   // slender tower around it, which is why it reads at all.
+  //
+  // The portal reaches the ground, so it is a NOTCH in one simple closed
+  // profile, not a hole in a plate. That keeps the triangulation clean (a hole
+  // sharing the contour's bottom edge produces degenerate slivers) and it is
+  // what the building is: two legs and a bridge.
+  const r = 5; // soffit corner fillet
   const shape = new THREE.Shape();
   shape.moveTo(-W / 2 - 3, 0);
+  shape.lineTo(-OPEN_W / 2, 0); // into the portal
+  shape.lineTo(-OPEN_W / 2, OPEN_H - r);
+  shape.quadraticCurveTo(-OPEN_W / 2, OPEN_H, -OPEN_W / 2 + r, OPEN_H);
+  shape.lineTo(OPEN_W / 2 - r, OPEN_H); // underside of the occupied bridge
+  shape.quadraticCurveTo(OPEN_W / 2, OPEN_H, OPEN_W / 2, OPEN_H - r);
+  shape.lineTo(OPEN_W / 2, 0);
   shape.lineTo(W / 2 + 3, 0);
-  shape.lineTo(W / 2, 7);
+  shape.lineTo(W / 2, 7); // battered leg
   shape.lineTo(W / 2, A - 13);
-  shape.lineTo(W / 2 + 2.5, A - 13);
+  shape.lineTo(W / 2 + 2.5, A - 13); // corbelled cornice
   shape.lineTo(W / 2 + 2.5, A - 6);
-  shape.lineTo(W / 2 - 4, A);
+  shape.lineTo(W / 2 - 4, A); // clipped upper corner
   shape.lineTo(-W / 2 + 4, A);
   shape.lineTo(-W / 2 - 2.5, A - 6);
   shape.lineTo(-W / 2 - 2.5, A - 13);
   shape.lineTo(-W / 2, A - 13);
   shape.lineTo(-W / 2, 7);
   shape.closePath();
-
-  const hole = new THREE.Path();
-  const r = 5;
-  hole.moveTo(-OPEN_W / 2, 0);
-  hole.lineTo(-OPEN_W / 2, OPEN_H - r);
-  hole.quadraticCurveTo(-OPEN_W / 2, OPEN_H, -OPEN_W / 2 + r, OPEN_H);
-  hole.lineTo(OPEN_W / 2 - r, OPEN_H);
-  hole.quadraticCurveTo(OPEN_W / 2, OPEN_H, OPEN_W / 2, OPEN_H - r);
-  hole.lineTo(OPEN_W / 2, 0);
-  hole.closePath();
-  shape.holes.push(hole);
 
   const arch = new THREE.ExtrudeGeometry(shape, { depth: D, bevelEnabled: false, curveSegments: 3, steps: 1 });
   arch.translate(0, PLINTH, -D / 2);
@@ -874,25 +888,29 @@ function buildAlYaqoub(): LandmarkMesh {
 function buildAlmasTower(): LandmarkMesh {
   const H = 360;
   const ROOF = 306;
-  const RINGS = 7;
+  const RINGS = 8;
   const rings: Ring[] = [];
   for (let i = 0; i < RINGS; i++) {
     const t = i / (RINGS - 1);
     const s = 1 - 0.42 * Math.pow(t, 1.15);
-    rings.push(ringAt(lensSection(34 * s, 19 * s, 5, t * THREE.MathUtils.degToRad(11)), ROOF * t));
+    // Each ring twists a little on the way up — the two halves of the real
+    // tower rotate against each other, which is what catches the light.
+    rings.push(ringAt(lensSection(34 * s, 19 * s, 6, t * THREE.MathUtils.degToRad(11)), ROOF * t));
   }
   const body = loft(rings, { smooth: true, capTop: true });
   const podium = loft([
-    ringAt(lensSection(46, 28, 4, 0), 0),
-    ringAt(lensSection(46, 28, 4, 0), 15),
-    ringAt(lensSection(38, 23, 4, 0), 15),
+    ringAt(lensSection(46, 28, 5, 0), 0),
+    ringAt(lensSection(46, 28, 5, 0), 15),
+    ringAt(lensSection(38, 23, 5, 0), 15),
   ], { capTop: true });
   const spire = needle(ROOF - 3, H - ROOF + 3, 4.2, 0.3, 4, 6);
 
   return {
     geometry: mergeAll([body, podium, spire]),
     emissive: mergeAll([
-      bandAt(lensSection(34 * 0.58, 19 * 0.58, 5, THREE.MathUtils.degToRad(11)), ROOF - 12, 8, 0.3),
+      // 0.6 matches the taper at ROOF-12; any less and the band sinks into the
+      // facade instead of glowing on it.
+      bandAt(lensSection(34 * 0.6, 19 * 0.6, 6, THREE.MathUtils.degToRad(11)), ROOF - 12, 8, 0.3),
       place(new THREE.OctahedronGeometry(2.4), 0, H - 4, 0),
     ]),
     height: H,
@@ -1046,7 +1064,10 @@ function buildGenericTower(seed: number): LandmarkMesh {
   }
 
   if (rnd() < 0.55) parts.push(boxAt(w * rr(2.2, 3.4), rr(7, 16), d * rr(2.2, 3.4), 0, 0, 0));
-  em.push(bandAt(plan(topS), shaftTop - crownH * 0.25, crownH * 0.2, 0.25));
+  // Crown band taken from the shaft's real top section (the taper is seeded, so
+  // a recomputed plan would not match) and held clear of the facade.
+  const topSec = top.map((p) => ({ x: p.x, z: p.z }));
+  em.push(bandAt(topSec, shaftTop - crownH * 0.25, crownH * 0.2, 0.45));
   if (rnd() < 0.4) em.push(bandAt(plan(1), H * 0.16, 2.4, 0.25)); // signage band
 
   return { geometry: mergeAll(parts), emissive: mergeAll(em), height: H };

@@ -229,18 +229,40 @@ function mergeAll(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
   return parts.length === 1 ? prep(parts[0]) : mergeGeometries(parts.map(prep), false);
 }
 
-/** Flat ribbon of quads through a polyline of edge pairs — the light strips. */
-function ribbon(edges: Array<[V3, V3]>): THREE.BufferGeometry {
+/**
+ * Flat ribbon of quads through a polyline of edge pairs — the light strips.
+ * Single-sided, so the winding is checked against `outward` and flipped if
+ * needed: a strip facing the wrong way is invisible under backface culling,
+ * and the two fascias of a viaduct necessarily face opposite directions.
+ */
+function ribbon(edges: Array<[V3, V3]>, outward: V3): THREE.BufferGeometry {
   const pos: number[] = [];
   const uv: number[] = [];
+
+  const [f0, f1] = edges[0];
+  const [g0] = edges[1];
+  const e1 = { x: g0.x - f0.x, y: g0.y - f0.y, z: g0.z - f0.z };
+  const e2 = { x: f1.x - f0.x, y: f1.y - f0.y, z: f1.z - f0.z };
+  const n = {
+    x: e1.y * e2.z - e1.z * e2.y,
+    y: e1.z * e2.x - e1.x * e2.z,
+    z: e1.x * e2.y - e1.y * e2.x,
+  };
+  const flip = n.x * outward.x + n.y * outward.y + n.z * outward.z < 0;
+
   for (let i = 0; i < edges.length - 1; i++) {
     const [a0, a1] = edges[i];
     const [b0, b1] = edges[i + 1];
     const u0 = i;
     const u1 = i + 1;
     const put = (p: V3, u: number, v: number): void => { pos.push(p.x, p.y, p.z); uv.push(u, v); };
-    put(a0, u0, 0); put(b0, u1, 0); put(b1, u1, 1);
-    put(a0, u0, 0); put(b1, u1, 1); put(a1, u0, 1);
+    if (flip) {
+      put(a0, u0, 0); put(b1, u1, 1); put(b0, u1, 0);
+      put(a0, u0, 0); put(a1, u0, 1); put(b1, u1, 1);
+    } else {
+      put(a0, u0, 0); put(b0, u1, 0); put(b1, u1, 1);
+      put(a0, u0, 0); put(b1, u1, 1); put(a1, u0, 1);
+    }
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -398,7 +420,7 @@ function buildStation(): { solid: THREE.BufferGeometry; glow: THREE.BufferGeomet
         { x: b.x * s * out, y: b.y * s + cy, z },
       ]);
     }
-    glow.push(ribbon(edges));
+    glow.push(ribbon(edges, { x: side === 0 ? 1 : -1, y: 0, z: 0 }));
   }
 
   return { solid: mergeAll([shell, ...legs]), glow: mergeAll(glow) };
@@ -446,7 +468,7 @@ export function buildMetro(opts: MetroOptions): MetroBuild {
         { x, y: DECK_TOP - 0.75, z },
       ]);
     }
-    strips.push(ribbon(edges));
+    strips.push(ribbon(edges, { x: sx, y: 0, z: 0 }));
   }
 
   const st = buildStation();

@@ -541,13 +541,19 @@ function merge(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
   return out;
 }
 
+/**
+ * Overall size in metres. Height is measured from the ground plane, not from
+ * the lowest triangle: y = 0 is the road by convention and the wheels (a
+ * separate geometry, centred on their own origin) reach down to it, so the
+ * bodywork's own bbox floor would under-report the vehicle's height.
+ */
 function sizeOf(parts: THREE.BufferGeometry[]): THREE.Vector3 {
   const bb = new THREE.Box3();
   for (const g of parts) {
     g.computeBoundingBox();
     if (g.boundingBox) bb.union(g.boundingBox);
   }
-  return bb.getSize(new THREE.Vector3());
+  return new THREE.Vector3(bb.max.x - bb.min.x, bb.max.y, bb.max.z - bb.min.z);
 }
 
 // ---------------------------------------------------------------------------
@@ -714,8 +720,10 @@ export function buildPlayerCar(): CarParts {
   const lightsFront = merge([
     patch(rings, HEAD_S0, HEAD_S1, LAMP_R0, LAMP_RC, -0.038),
     patch(rings, HEAD_S0, HEAD_S1, LAMP_R0_L, LAMP_RC, -0.038),
-    box(0.30, 0.032, 0.028, 0.55, 0.585, -2.128), // DRL blade R
-    box(0.30, 0.032, 0.028, -0.55, 0.585, -2.128), // DRL blade L
+    // Lower bar, standing on the floor of the grille recess. It reads as a
+    // second light source deep in the mouth, which is the cue that says the
+    // grille is a hole rather than a painted rectangle.
+    box(0.80, 0.045, 0.030, 0, 0.525, -2.085),
   ]);
   const lightsRear = merge([
     patch(rings, TAIL_S0, TAIL_S1, LAMP_R0, LAMP_RC, -0.034),
@@ -735,8 +743,10 @@ export function buildPlayerCar(): CarParts {
     box(1.50, 0.060, 0.160, 0, 0.152, -2.170), // front splitter, stepped out
     box(0.28, 0.120, 0.090, 0.60, 0.285, -2.140), // corner intake R
     box(0.28, 0.120, 0.090, -0.60, 0.285, -2.140), // corner intake L
-    box(0.062, 0.075, 2.05, 0.906, 0.150, 0.10), // side skirt R
-    box(0.062, 0.075, 2.05, -0.906, 0.150, 0.10), // side skirt L
+    // Skirt blades are set to overlap the sill rail (x ≈ 0.79) and step out to
+    // 0.89, so they bite into the body instead of floating beside it.
+    box(0.135, 0.070, 2.05, 0.822, 0.168, 0.10), // side skirt R
+    box(0.135, 0.070, 2.05, -0.822, 0.168, 0.10), // side skirt L
     taperBox(1.62, 0.055, 0.13, 0, 0.972, 1.985, 0.94, 0.7), // ducktail lip
     box(1.52, 0.100, 0.160, 0, 0.216, 2.170), // rear valance
     revolve([[-0.05, 0.048], [0.05, 0.048]], 8).translate(0.40, 0.30, 2.20), // exhaust R
@@ -772,4 +782,292 @@ export function buildPlayerCar(): CarParts {
     ],
     size,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Traffic
+// ---------------------------------------------------------------------------
+
+/**
+ * Traffic is built from the same lofted sections at a coarser ring (14 instead
+ * of 18) and merged down to ONE geometry per kind, ready for an InstancedMesh.
+ *
+ * The brief for these is different from the hero car: they are seen from behind,
+ * at distance, at speed. So the money goes into the **rear three-quarters** —
+ * section density is deliberately front-light and rear-heavy — and into making
+ * each kind's SILHOUETTE unmistakable in one glance:
+ *
+ *   coupe  low fastback, the player's own shape
+ *   sedan  three-box notch: roof, a clear step down, then a flat boot deck
+ *   suv    upright, tall level roof, near-vertical tailgate, roof rails
+ *   taxi   sedan plus the roof sign that identifies it across four lanes
+ *   bus    tall slab, flat front face, hard roof lip, six wheels
+ *   truck  cab, a VISIBLE GAP, then a separate box that is taller than the cab
+ */
+const L = RAIL_LO;
+const TRAFFIC_CREASE_RAILS = [
+  L.sill,
+  L.shoulder,
+  L.belt,
+  L.rail,
+  mirrorRail(L.sill, L.count),
+  mirrorRail(L.shoulder, L.count),
+  mirrorRail(L.belt, L.count),
+  mirrorRail(L.rail, L.count),
+];
+
+/**
+ * Traffic wheel: an 8-sided drum. Deliberately crude — at 40 m a traffic wheel
+ * is four pixels tall, and every triangle spent here is one not spent on the
+ * roofline that actually identifies the vehicle.
+ */
+function trafficWheel(r: number, halfW: number): THREE.BufferGeometry {
+  return revolve(
+    [
+      [-halfW * 0.92, 0],
+      [-halfW, r],
+      [halfW, r],
+      [halfW * 0.92, 0],
+    ],
+    8,
+    [1, 2],
+  );
+}
+
+//              z,  yBot,  yTop,  wBot,  wMax,   ySh, wBelt, yBelt,  wTop,  topF,  botF
+const SEDAN: Sec[] = [
+  [-2.425, 0.360, 0.860, 0.550, 0.700, 0.620, 0.660, 0.760, 0.540, 0.90, 0.90],
+  [-2.260, 0.220, 0.940, 0.720, 0.860, 0.640, 0.820, 0.840, 0.700, 0.80, 0.70],
+  [-1.950, 0.190, 1.020, 0.800, 0.900, 0.660, 0.860, 0.900, 0.780, 0.70, 0.60],
+  [-1.680, 0.180, 1.050, 0.830, 0.915, 0.660, 0.870, 0.930, 0.810, 0.60, 0.50],
+  [-1.400, 0.470, 1.070, 0.905, 0.920, 0.660, 0.875, 0.950, 0.820, 0.55, 0.40], // front axle
+  [-1.120, 0.180, 1.090, 0.830, 0.918, 0.660, 0.878, 0.970, 0.830, 0.55, 0.50],
+  [-0.720, 0.175, 1.110, 0.810, 0.915, 0.660, 0.875, 0.990, 0.830, 0.40, 0.50], // screen base
+  [-0.100, 0.175, 1.455, 0.810, 0.918, 0.660, 0.845, 1.090, 0.665, 0.85, 0.50], // roof front
+  [0.600, 0.175, 1.460, 0.815, 0.920, 0.660, 0.845, 1.090, 0.660, 0.85, 0.50], //  roof rear
+  [1.000, 0.180, 1.320, 0.820, 0.918, 0.660, 0.850, 1.080, 0.700, 0.70, 0.50], //  rear screen
+  [1.160, 0.300, 1.235, 0.860, 0.918, 0.660, 0.858, 1.060, 0.730, 0.60, 0.45],
+  [1.400, 0.470, 1.180, 0.905, 0.920, 0.660, 0.868, 1.050, 0.780, 0.45, 0.40], //  rear axle
+  [1.660, 0.300, 1.155, 0.860, 0.918, 0.655, 0.874, 1.040, 0.815, 0.35, 0.45],
+  [1.950, 0.190, 1.145, 0.810, 0.912, 0.650, 0.876, 1.030, 0.830, 0.30, 0.50], //  boot deck
+  [2.200, 0.210, 1.135, 0.780, 0.900, 0.645, 0.870, 1.020, 0.828, 0.28, 0.55], //  tail
+  [2.425, 0.300, 1.060, 0.660, 0.800, 0.620, 0.780, 0.960, 0.740, 0.50, 0.65],
+];
+
+const SUV: Sec[] = [
+  [-2.450, 0.400, 1.000, 0.600, 0.760, 0.700, 0.720, 0.880, 0.600, 0.80, 0.90],
+  [-2.280, 0.260, 1.120, 0.780, 0.920, 0.720, 0.880, 0.980, 0.780, 0.70, 0.70],
+  [-1.950, 0.230, 1.240, 0.860, 0.965, 0.740, 0.925, 1.060, 0.870, 0.60, 0.60],
+  [-1.710, 0.220, 1.300, 0.890, 0.980, 0.740, 0.935, 1.120, 0.900, 0.50, 0.50],
+  [-1.425, 0.530, 1.340, 0.975, 0.990, 0.740, 0.940, 1.160, 0.910, 0.45, 0.40], // front axle
+  [-1.140, 0.220, 1.380, 0.890, 0.985, 0.740, 0.940, 1.190, 0.920, 0.45, 0.50],
+  [-0.800, 0.215, 1.420, 0.870, 0.982, 0.740, 0.938, 1.210, 0.920, 0.35, 0.50], // screen base
+  [-0.300, 0.215, 1.775, 0.870, 0.982, 0.740, 0.910, 1.300, 0.790, 0.40, 0.50], // roof front
+  [0.500, 0.215, 1.780, 0.875, 0.985, 0.740, 0.910, 1.300, 0.790, 0.35, 0.50],
+  [1.140, 0.220, 1.778, 0.890, 0.985, 0.740, 0.912, 1.300, 0.790, 0.35, 0.50],
+  [1.425, 0.530, 1.775, 0.975, 0.990, 0.740, 0.915, 1.300, 0.790, 0.35, 0.40], //  rear axle
+  [1.710, 0.220, 1.770, 0.890, 0.985, 0.740, 0.915, 1.290, 0.790, 0.35, 0.50],
+  [1.950, 0.235, 1.760, 0.860, 0.978, 0.735, 0.912, 1.280, 0.800, 0.30, 0.55], //  D-pillar
+  [2.200, 0.250, 1.735, 0.820, 0.960, 0.730, 0.900, 1.260, 0.800, 0.28, 0.60], //  tailgate
+  [2.450, 0.340, 1.620, 0.700, 0.845, 0.700, 0.800, 1.180, 0.720, 0.50, 0.70],
+];
+
+const BUS: Sec[] = [
+  // Front face is only marginally smaller than the body: that is what makes a
+  // bus read as a SLAB — a flat vertical face, no nose, no taper.
+  [-6.000, 0.600, 3.100, 1.140, 1.220, 1.600, 1.200, 1.950, 1.140, 0.25, 0.35],
+  [-5.800, 0.440, 3.190, 1.240, 1.272, 1.600, 1.258, 1.950, 1.190, 0.18, 0.25],
+  [-4.400, 0.420, 3.200, 1.245, 1.275, 1.600, 1.262, 1.950, 1.200, 0.15, 0.20],
+  [-4.000, 0.750, 3.200, 1.255, 1.275, 1.600, 1.262, 1.950, 1.200, 0.15, 0.18], // front axle
+  [-3.600, 0.420, 3.200, 1.245, 1.275, 1.600, 1.262, 1.950, 1.200, 0.15, 0.20],
+  [0.000, 0.420, 3.200, 1.245, 1.275, 1.600, 1.262, 1.950, 1.200, 0.15, 0.20],
+  [2.900, 0.420, 3.200, 1.245, 1.275, 1.600, 1.262, 1.950, 1.200, 0.15, 0.20],
+  [3.200, 0.720, 3.200, 1.255, 1.275, 1.600, 1.262, 1.950, 1.200, 0.15, 0.18], // rear axle 1
+  [3.800, 0.500, 3.200, 1.248, 1.275, 1.600, 1.262, 1.950, 1.200, 0.15, 0.20],
+  [4.400, 0.720, 3.200, 1.255, 1.275, 1.600, 1.262, 1.950, 1.200, 0.15, 0.18], // rear axle 2
+  [4.700, 0.420, 3.200, 1.245, 1.275, 1.600, 1.262, 1.950, 1.200, 0.15, 0.20],
+  [5.800, 0.440, 3.190, 1.240, 1.272, 1.600, 1.258, 1.950, 1.190, 0.18, 0.25],
+  [6.000, 0.600, 3.100, 1.140, 1.220, 1.600, 1.200, 1.950, 1.140, 0.25, 0.35],
+];
+
+const TRUCK_CAB: Sec[] = [
+  [-4.800, 0.620, 2.600, 1.080, 1.160, 1.300, 1.140, 1.900, 1.060, 0.30, 0.40],
+  [-4.620, 0.500, 2.780, 1.180, 1.220, 1.300, 1.205, 1.920, 1.150, 0.20, 0.30],
+  [-4.200, 0.660, 2.830, 1.200, 1.220, 1.300, 1.208, 1.940, 1.160, 0.20, 0.30],
+  [-3.900, 0.780, 2.850, 1.205, 1.220, 1.300, 1.210, 1.950, 1.160, 0.20, 0.25], // front axle
+  [-3.600, 0.660, 2.850, 1.200, 1.220, 1.300, 1.210, 1.950, 1.160, 0.20, 0.30],
+  [-2.600, 0.500, 2.850, 1.190, 1.218, 1.300, 1.208, 1.950, 1.150, 0.20, 0.30],
+  [-2.200, 0.520, 2.800, 1.160, 1.200, 1.300, 1.190, 1.940, 1.130, 0.25, 0.35],
+];
+
+const TRUCK_BOX: Sec[] = [
+  [-1.900, 1.050, 3.520, 1.200, 1.235, 2.000, 1.232, 2.700, 1.210, 0.20, 0.30],
+  [-1.600, 1.020, 3.600, 1.235, 1.250, 2.000, 1.248, 2.700, 1.235, 0.12, 0.20],
+  [4.500, 1.020, 3.600, 1.235, 1.250, 2.000, 1.248, 2.700, 1.235, 0.12, 0.20],
+  [4.800, 1.080, 3.520, 1.190, 1.225, 2.000, 1.222, 2.700, 1.200, 0.20, 0.30],
+];
+
+/** Traffic coupé: the hero table, subsampled. Same car, a third of the cost. */
+const COUPE_LOD = [0, 1, 3, 6, 9, 11, 13, 15, 17, 19, 22, 24, 25].map((i) => COUPE[i]);
+
+interface TrafficSpec {
+  sections: Sec[];
+  creaseSections: number[];
+  /** [z of the axle, wheel radius]; each is mirrored to both sides. */
+  axles: [number, number][];
+  halfTrack: number;
+  /** Rear lamp clusters as [halfSpacing, y, z]. */
+  lamps: [number, number, number] | null;
+  extras?: () => THREE.BufferGeometry[];
+}
+
+function trafficSpec(kind: VehicleKind): TrafficSpec {
+  switch (kind) {
+    case 'coupe':
+      return {
+        sections: COUPE_LOD,
+        creaseSections: [1, 5, 6, 7, 11],
+        axles: [
+          [-1.33, WHEEL_R],
+          [1.33, WHEEL_R],
+        ],
+        halfTrack: 0.8,
+        lamps: [0.6, 0.86, 2.16],
+      };
+    case 'sedan':
+      return {
+        sections: SEDAN,
+        creaseSections: [6, 7, 8, 11, 13, 14],
+        axles: [
+          [-1.4, 0.32],
+          [1.4, 0.32],
+        ],
+        halfTrack: 0.78,
+        lamps: [0.6, 1.03, 2.38],
+      };
+    case 'taxi':
+      return {
+        sections: SEDAN,
+        creaseSections: [6, 7, 8, 11, 13, 14],
+        axles: [
+          [-1.4, 0.32],
+          [1.4, 0.32],
+        ],
+        halfTrack: 0.78,
+        lamps: [0.6, 1.03, 2.38],
+        // The roof sign is the whole point of a taxi silhouette: it is the one
+        // feature visible over four lanes of dusk traffic.
+        extras: () => [
+          box(0.30, 0.045, 0.30, 0, 1.478, 0.05),
+          taperBox(0.66, 0.20, 0.26, 0, 1.60, 0.05, 0.86, 0.8),
+        ],
+      };
+    case 'suv':
+      return {
+        sections: SUV,
+        creaseSections: [6, 7, 12, 13],
+        axles: [
+          [-1.425, 0.36],
+          [1.425, 0.36],
+        ],
+        halfTrack: 0.82,
+        lamps: [0.68, 1.42, 2.41],
+        // Roof rails: two thin blades that break the roof's straight edge and
+        // say "utility" instantly, for 24 triangles.
+        extras: () => [
+          box(0.06, 0.055, 2.10, 0.60, 1.805, 0.10),
+          box(0.06, 0.055, 2.10, -0.60, 1.805, 0.10),
+        ],
+      };
+    case 'bus':
+      return {
+        sections: BUS,
+        creaseSections: [0, 1, 11, 12],
+        axles: [
+          [-4.0, 0.51],
+          [3.2, 0.51],
+          [4.4, 0.51],
+        ],
+        halfTrack: 1.06,
+        lamps: [1.02, 0.95, 5.96],
+        // The roof lip. A bus roof is a tray, not a dome — the raised rim along
+        // the edges is most of what distinguishes it from an anonymous slab.
+        extras: () => [
+          box(0.075, 0.075, 11.5, 1.185, 3.215, 0),
+          box(0.075, 0.075, 11.5, -1.185, 3.215, 0),
+          box(2.42, 0.075, 0.09, 0, 3.215, -5.83),
+          box(2.42, 0.075, 0.09, 0, 3.215, 5.83),
+        ],
+      };
+    case 'truck':
+      return {
+        sections: TRUCK_CAB,
+        creaseSections: [0, 1, 5, 6],
+        axles: [
+          [-3.9, 0.52],
+          [3.2, 0.52],
+          [4.3, 0.52],
+        ],
+        halfTrack: 1.04,
+        lamps: [1.0, 1.30, 4.79],
+        extras: () => [
+          // The box is a SEPARATE loft with a 0.30 m gap behind the cab, and it
+          // is 0.75 m taller. Cab-gap-taller-box is the truck read; a single
+          // fused volume reads as a van.
+          loft(
+            TRUCK_BOX.map((s) => sectionRing(s, LO)),
+            { creaseSections: [0, 1, 2, 3], creaseRails: TRAFFIC_CREASE_RAILS, capFront: true, capBack: true },
+          ),
+          box(1.00, 0.16, 6.40, 0, 0.94, 1.30), // chassis rail bridging the gap
+        ],
+      };
+  }
+}
+
+const SIZE_CACHE = new Map<VehicleKind, THREE.Vector3>();
+
+/**
+ * One merged, indexed geometry per kind — a single InstancedMesh draw call.
+ *
+ * Returns a FRESH geometry each call on purpose: callers attach per-instance
+ * attributes (`aColor` and friends) to the geometry itself, so handing out a
+ * shared instance would make one vehicle pool overwrite another's colours.
+ */
+export function buildTrafficGeometry(kind: VehicleKind): THREE.BufferGeometry {
+  const spec = trafficSpec(kind);
+  const rings = spec.sections.map((s) => sectionRing(s, LO));
+  const parts: THREE.BufferGeometry[] = [
+    loft(rings, {
+      creaseSections: spec.creaseSections,
+      creaseRails: TRAFFIC_CREASE_RAILS,
+      capFront: true,
+      capBack: true,
+    }),
+  ];
+
+  for (const [z, r] of spec.axles) {
+    const halfW = r * 0.34;
+    parts.push(trafficWheel(r, halfW).translate(spec.halfTrack, r, z));
+    parts.push(trafficWheel(r, halfW).translate(-spec.halfTrack, r, z));
+  }
+
+  if (spec.lamps) {
+    // Raised lens blocks rather than sunk pockets: from 40 m behind, a lamp
+    // that catches light beats a lamp that is geometrically correct.
+    const [dx, y, z] = spec.lamps;
+    parts.push(box(0.34, 0.15, 0.05, dx, y, z), box(0.34, 0.15, 0.05, -dx, y, z));
+  }
+  if (spec.extras) parts.push(...spec.extras());
+
+  return merge(parts);
+}
+
+/** Overall bounding size in metres (x=width, y=height, z=length). */
+export function trafficSize(kind: VehicleKind): THREE.Vector3 {
+  let v = SIZE_CACHE.get(kind);
+  if (!v) {
+    v = sizeOf([buildTrafficGeometry(kind)]);
+    SIZE_CACHE.set(kind, v);
+  }
+  return v.clone();
 }
