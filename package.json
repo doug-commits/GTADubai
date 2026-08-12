@@ -6,6 +6,7 @@
   "description": "Mukbang Dash — arcade dash down Sheikh Zayed Road to the Love Mukbang branch at Dubai World Trade Centre.",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node tools/check-shaders.mjs",
     "build": "vite build",
     "preview": "vite preview --port 4173 --strictPort",
     "bake": "node tools/import-osm.mjs",

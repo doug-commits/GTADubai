@@ -74,6 +74,7 @@ const ROAD_FRAG = /* glsl */ `
   uniform float uHasRough;
   uniform float uFogNear;
   uniform float uFogFar;
+  uniform float uDebug;
 
   ${SKY_GLSL}
 
@@ -100,6 +101,18 @@ const ROAD_FRAG = /* glsl */ `
     float lat = vUv.x;
     float along = vUv.y;
     float absLat = abs(lat);
+
+    // Diagnostic (?debugroad=1): flat checker straight from the UVs, no
+    // lighting, no fog, no reflection. Answers "is this surface being drawn
+    // here at all, and is the along-coordinate advancing" in one frame.
+    if (uDebug > 0.5) {
+      float ca = step(0.5, fract(along / 12.0));
+      float cb = step(0.5, fract(lat / uLaneWidth));
+      vec3 dbg = mix(vec3(0.9, 0.0, 0.9), vec3(0.0, 0.9, 0.4), abs(ca - cb));
+      dbg = mix(dbg, vec3(1.0, 1.0, 0.0), vEdge);
+      outColor = vec4(dbg, 1.0);
+      return;
+    }
 
     // ---------------------------------------------------------------- asphalt
     // Two noise octaves at very different scales: fine aggregate plus broad
@@ -274,6 +287,13 @@ export class Road {
         uHasRough: { value: 0 },
         uFogNear: { value: opts.fogNear ?? 260 },
         uFogFar: { value: opts.fogFar ?? 1150 },
+        uDebug: {
+          value:
+            typeof location !== 'undefined' &&
+            new URLSearchParams(location.search).has('debugroad')
+              ? 1
+              : 0,
+        },
       },
       vertexShader: ROAD_VERT,
       fragmentShader: ROAD_FRAG,
