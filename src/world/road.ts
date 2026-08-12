@@ -151,16 +151,38 @@ const ROAD_FRAG = /* glsl */ `
     base *= 1.0 - wet * 0.34;
 
     // ---------------------------------------------------------------- markings
+    //
+    // Both axes need band-limiting or the markings alias violently. A pixel
+    // near the horizon spans tens of metres of along-distance, so sampling a 12 m
+    // dash cycle point-wise produces wide moire bands that read as transverse
+    // stripes across the carriageway — a zebra crossing repeating to infinity.
+    // Fade each pattern toward its own average once a pixel is wider than the
+    // feature it is trying to resolve.
+    float alongW = fwidth(along);
+    float latW = fwidth(lat);
+
+    // Duty cycle of the dash: 3 m painted in every 12 m.
+    const float DASH_DUTY = 0.25;
+    float dashFade = 1.0 - smoothstep(0.6, 3.0, alongW);
+    float dashCycle = step(mod(along, 12.0), 3.0);
+    float dash = mix(DASH_DUTY, dashCycle, dashFade);
+
+    // Lateral coverage of a 0.11 m stripe within a 3.65 m lane.
+    float stripeFade = 1.0 - smoothstep(0.05, 0.35, latW);
+
     float md = 1e9;
-    // Interior lane dashes: 3 m painted, 9 m gap.
     for (int i = 1; i < 5; i++) {
       float x = -uHalfWidth + float(i) * uLaneWidth;
-      float dash = step(mod(along, 12.0), 3.0);
-      md = min(md, mix(1e9, abs(lat - x), dash));
+      md = min(md, abs(lat - x));
     }
-    float lanePaint = 1.0 - smoothstep(0.055, 0.115, md);
-    // Solid edge lines.
-    float edgePaint = (1.0 - smoothstep(0.07, 0.14, abs(absLat - uHalfWidth + 0.25)));
+    // Widen the analytic edge with the pixel footprint: a sub-pixel line must
+    // get dimmer, not thinner, or it shimmers.
+    float lanePaint = (1.0 - smoothstep(0.055, 0.115 + latW, md)) * dash;
+    lanePaint = mix(lanePaint * 0.30, lanePaint, stripeFade);
+
+    float edgePaint = 1.0 - smoothstep(0.07, 0.14 + latW, abs(absLat - uHalfWidth + 0.25));
+    edgePaint = mix(edgePaint * 0.45, edgePaint, stripeFade);
+
     float paint = clamp(lanePaint + edgePaint, 0.0, 1.0) * (1.0 - vEdge);
     // Paint is worn, not pristine white — but it is the brightest thing on the
     // carriageway by a wide margin, and the dashes streaking toward the camera
@@ -174,7 +196,9 @@ const ROAD_FRAG = /* glsl */ `
     base = mix(base, paintCol, paint * 0.95);
 
     // Rumble strip on the hard shoulder.
-    float rumble = step(uHalfWidth + 0.4, absLat) * step(absLat, uHalfWidth + 1.4) * step(mod(along, 1.2), 0.6);
+    float rumbleFade = 1.0 - smoothstep(0.15, 0.6, alongW);
+    float rumble = step(uHalfWidth + 0.4, absLat) * step(absLat, uHalfWidth + 1.4)
+                 * step(mod(along, 1.2), 0.6) * rumbleFade;
     base = mix(base, base * 0.5, rumble * (1.0 - vEdge));
 
     // ------------------------------------------------------------- reflection
