@@ -1,16 +1,28 @@
 import * as THREE from 'three';
 import { FullScreenPass, makeTarget } from './fsq';
+import { createSsaoPass, type SsaoPass } from './ssao';
+import { SHADOW_GLSL, shadowUniforms, syncShadowUniforms, type ShadowSystem } from './shadows';
 
 /**
  * HDR post chain.
  *
- *   scene(HDR) -> bright extract -> dual-filter bloom pyramid -> composite
+ *   scene(HDR + depth) -> SSAO (half res, bilateral) ------------.
+ *                      -> bright extract -> dual-filter bloom ---+-> composite
  *
- * The composite pass does radial motion blur, bloom add, filmic tonemap, the
- * "Ember & Char" dusk grade, chromatic aberration, vignette and grain in ONE
- * fullscreen pass. Everything else runs at half resolution or lower, so the
- * only native-resolution work is the scene render plus that single pass —
- * which is what keeps this inside a phone's fill-rate budget.
+ * The composite pass does the deferred sun shadow and ambient occlusion,
+ * radial motion blur, bloom add, filmic tonemap, the "Ember & Char" dusk
+ * grade, chromatic aberration, vignette and grain in ONE fullscreen pass.
+ * Everything else runs at half resolution or lower, so the only
+ * native-resolution work is the scene render plus that single pass — which is
+ * what keeps this inside a phone's fill-rate budget.
+ *
+ * Shadow and AO are applied HERE rather than inside each surface shader
+ * because every material in the game is a bespoke RawShaderMaterial with its
+ * own lighting: there is no shared shading function to hook. The scene target
+ * therefore carries a real depth TEXTURE, world position is reconstructed from
+ * it, and the linear HDR colour is modulated before anything tonemaps it.
+ * `SHADOW_GLSL` is the same chunk a surface shader would include, so moving
+ * the shadow term forward into the materials later is a drop-in.
  */
 
 const BLOOM_LEVELS = 5;
@@ -86,6 +98,8 @@ const COMPOSITE_FRAG = /* glsl */ `${COMMON}
 
   uniform sampler2D tScene;
   uniform sampler2D tBloom;
+  uniform sampler2D tDepth;    // scene depth, for shadow + AO reconstruction
+  uniform sampler2D tAO;       // half-res, blurred ambient occlusion
   uniform vec2  uResolution;
   uniform float uTime;
   uniform float uSpeed01;      // 0..1 normalised speed, drives every velocity cue
@@ -97,6 +111,18 @@ const COMPOSITE_FRAG = /* glsl */ `${COMMON}
   uniform float uVignette;
   uniform float uGrain;
   uniform float uFade;         // 1 = fully faded to black (phase transitions)
+  uniform mat4  uInvProj;      // clip -> view
+  uniform mat4  uInvViewProj;  // clip -> world
+  uniform mat3  uCamRot;       // view -> world rotation, for the reconstructed normal
+  uniform float uAo;           // 0..1 AO strength
+  uniform float uDebugView;    // 0 = normal, 1 = AO only, 2 = shadow only
+
+  ${SHADOW_GLSL}
+
+  // What a surface keeps when the sun is blocked: no warm key, only the cool
+  // skylight that the grade then pushes further toward char. Losing 100 % of
+  // the light reads as a hole cut in the image, not as a shadow.
+  const vec3 SUN_LOSS = vec3(0.30, 0.335, 0.44);
 
   // --- "Ember & Char" grade ------------------------------------------------
   // CHAR is cool, not brown. Real dusk is a blue-to-orange split: skylight is
@@ -208,6 +234,42 @@ const COMPOSITE_FRAG = /* glsl */ `${COMMON}
     }
     col /= wsum;
 
+    // --- deferred sun shadow + ambient occlusion ---------------------------
+    // Reconstruct the fragment from depth once, and use it for both terms.
+    // Derivatives are taken here, in uniform control flow, because sampleShadow
+    // builds a receiver-plane bias out of them.
+    float sceneDepth = textureLod(tDepth, uv, 0.0).r;
+    vec4 clip = vec4(uv * 2.0 - 1.0, sceneDepth * 2.0 - 1.0, 1.0);
+    vec4 vp = uInvProj * clip;
+    vec3 viewPos = vp.xyz / vp.w;
+    vec4 wp = uInvViewProj * clip;
+    vec3 worldPos = wp.xyz / wp.w;
+    // Geometric normal from the depth buffer. Only the bias and the
+    // facing-away gate use it, so screen-space accuracy is plenty.
+    vec3 N = normalize(uCamRot * normalize(cross(dFdx(viewPos), dFdy(viewPos))));
+
+    float visRaw = sampleShadow(worldPos, N);
+    float aoRaw = textureLod(tAO, uv, 0.0).r;
+
+    // The sky never writes depth, so it sits at the clear value and is exempt
+    // from both terms — a darkened sky is the classic giveaway of AO applied
+    // as a blanket multiply.
+    float isSky = step(0.999999, sceneDepth);
+    float vis = mix(visRaw, 1.0, isSky);
+    float ao = mix(aoRaw, 1.0, isSky);
+
+    // Emitters are not lit by the sun and must not be shadowed by it: window
+    // interiors, headlights, signage and the lane paint under a streetlight are
+    // all well above 1.0 in linear HDR. Fade both terms out as the pixel
+    // brightens, or the city switches off wherever a shadow crosses it.
+    float srcLum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+    float guard = 1.0 - smoothstep(0.85, 2.40, srcLum);
+    vis = mix(1.0, vis, guard);
+    ao = mix(1.0, ao, guard);
+
+    col *= mix(SUN_LOSS, vec3(1.0), vis);
+    col *= mix(1.0, ao, uAo);
+
     // --- bloom -------------------------------------------------------------
     vec3 bloom = texture(tBloom, uv).rgb;
     col += bloom * uBloom;
@@ -243,6 +305,19 @@ const COMPOSITE_FRAG = /* glsl */ `${COMMON}
     // Manual sRGB encode — the target is written as raw bytes.
     col = clamp(col, 0.0, 1.0);
     vec3 srgb = mix(col * 12.92, 1.055 * pow(max(col, 1e-5), vec3(1.0 / 2.4)) - 0.055, step(0.0031308, col));
+
+    // Isolation views for the critic harness: ?viewao=1 / ?viewshadow=1.
+    if (uDebugView > 0.5) {
+      srgb = vec3(uDebugView < 1.5 ? aoRaw : visRaw);
+      if (uDebugView > 2.5) {
+        vec4 dsc = uShadowMatrix * vec4(worldPos, 1.0);
+        if (uDebugView < 3.5) srgb = vec3(fract(sceneDepth * 64.0), sceneDepth, 0.0);
+        else if (uDebugView < 4.5) srgb = vec3(dsc.xy, 0.0);
+        else if (uDebugView < 5.5) srgb = vec3(fract(dsc.z * 8.0), dsc.z, 0.0);
+        else if (uDebugView < 6.5) srgb = vec3(textureLod(tShadowMap, clamp(dsc.xy, 0.0, 1.0), 0.0).r);
+        else srgb = abs(N);
+      }
+    }
     outColor = vec4(srgb, 1.0);
   }
 `;
@@ -252,10 +327,18 @@ export interface PostSettings {
   exposure: number;
   vignette: number;
   grain: number;
+  /** Ambient occlusion strength, 0..1. Subtle by design — see the shader. */
+  ao: number;
 }
 
 export class PostPipeline {
   sceneTarget: THREE.WebGLRenderTarget;
+  readonly sceneDepth: THREE.DepthTexture;
+  readonly ssao: SsaoPass;
+  /** Set by the game once the shadow system exists. Null disables shadowing. */
+  shadows: ShadowSystem | null = null;
+  /** 0 = normal, 1 = AO isolated, 2 = shadow isolated. */
+  debugView = 0;
   private bright: THREE.WebGLRenderTarget[] = [];
   private brightPass: FullScreenPass;
   private downPass: FullScreenPass;
@@ -279,15 +362,38 @@ export class PostPipeline {
     return this.bright.length;
   }
 
+  /**
+   * Fullscreen-equivalent passes after the scene render: bright extract,
+   * down/up bloom pyramid, composite, plus the three quarter-area SSAO passes.
+   */
+  get passCount() {
+    return 2 + (this.bright.length - 1) * 2 + 3;
+  }
+
   /** Live, tweakable per frame. */
   speed01 = 0;
   shake = 0;
   flash = 0;
   fade = 0;
   focal = new THREE.Vector2(0.5, 0.55);
-  settings: PostSettings = { bloom: 1.15, exposure: 0.78, vignette: 0.62, grain: 0.026 };
+  settings: PostSettings = {
+    bloom: 1.15,
+    exposure: 0.78,
+    vignette: 0.62,
+    grain: 0.026,
+    ao: 0.62,
+  };
 
   constructor(private renderer: THREE.WebGLRenderer) {
+    // A depth TEXTURE, not just a depth buffer: SSAO and the deferred shadow
+    // both read it. NEAREST is not a choice — a WebGL2 depth texture with
+    // TEXTURE_COMPARE_MODE off is not filterable, and LINEAR returns garbage.
+    this.sceneDepth = new THREE.DepthTexture(1, 1, THREE.UnsignedIntType);
+    this.sceneDepth.format = THREE.DepthFormat;
+    this.sceneDepth.minFilter = THREE.NearestFilter;
+    this.sceneDepth.magFilter = THREE.NearestFilter;
+    this.sceneDepth.compareFunction = null;
+
     this.sceneTarget = new THREE.WebGLRenderTarget(1, 1, {
       type: THREE.HalfFloatType,
       format: THREE.RGBAFormat,
@@ -296,8 +402,10 @@ export class PostPipeline {
       depthBuffer: true,
       stencilBuffer: false,
       generateMipmaps: false,
+      depthTexture: this.sceneDepth,
     });
     this.sceneTarget.texture.colorSpace = THREE.NoColorSpace;
+    this.ssao = createSsaoPass();
 
     this.brightPass = new FullScreenPass(
       BRIGHT_FRAG,
@@ -331,6 +439,8 @@ export class PostPipeline {
       {
         tScene: { value: null },
         tBloom: { value: null },
+        tDepth: { value: null },
+        tAO: { value: null },
         uResolution: { value: new THREE.Vector2() },
         uTime: { value: 0 },
         uSpeed01: { value: 0 },
@@ -342,6 +452,12 @@ export class PostPipeline {
         uVignette: { value: 0.9 },
         uGrain: { value: 0.035 },
         uFade: { value: 0 },
+        uInvProj: { value: new THREE.Matrix4() },
+        uInvViewProj: { value: new THREE.Matrix4() },
+        uCamRot: { value: new THREE.Matrix3() },
+        uAo: { value: 0.6 },
+        uDebugView: { value: 0 },
+        ...shadowUniforms(),
       },
       'composite',
     );
@@ -354,6 +470,7 @@ export class PostPipeline {
     const w = Math.max(1, Math.floor(width * pixelRatio));
     const h = Math.max(1, Math.floor(height * pixelRatio));
     this.sceneTarget.setSize(w, h);
+    this.ssao.setSize(width, height, pixelRatio);
 
     for (const t of this.bright) t.dispose();
     this.bright = [];
@@ -377,6 +494,12 @@ export class PostPipeline {
     r.render(scene, camera);
     this.sceneStats.drawCalls = r.info.render.calls;
     this.sceneStats.triangles = r.info.render.triangles;
+
+    // AO from depth, half res, before anything touches the colour.
+    const persp = camera as THREE.PerspectiveCamera;
+    if (persp.isPerspectiveCamera) {
+      this.ssao.render(r, this.sceneDepth, persp);
+    }
 
     // Bright extract into level 0.
     this.brightPass.material.uniforms.tScene.value = this.sceneTarget.texture;
@@ -413,6 +536,21 @@ export class PostPipeline {
     const u = this.compositePass.material.uniforms;
     u.tScene.value = this.sceneTarget.texture;
     u.tBloom.value = this.bright[0].texture;
+    u.tDepth.value = this.sceneDepth;
+    u.tAO.value = this.ssao.texture;
+    u.uAo.value = persp.isPerspectiveCamera ? this.settings.ao : 0;
+    u.uDebugView.value = this.debugView;
+
+    // Depth -> view -> world. `matrixWorld` and `projectionMatrixInverse` are
+    // both current: the rig updated the projection and the scene render above
+    // refreshed the world matrix.
+    (u.uInvProj.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
+    (u.uInvViewProj.value as THREE.Matrix4)
+      .copy(camera.matrixWorld)
+      .multiply(camera.projectionMatrixInverse);
+    (u.uCamRot.value as THREE.Matrix3).setFromMatrix4(camera.matrixWorld);
+    syncShadowUniforms(u, this.shadows);
+
     u.uTime.value = time;
     u.uSpeed01.value = this.speed01;
     u.uBloom.value = this.settings.bloom;
@@ -451,6 +589,8 @@ export class PostPipeline {
 
   dispose() {
     this.sceneTarget.dispose();
+    this.sceneDepth.dispose();
+    this.ssao.dispose();
     for (const t of this.bright) t.dispose();
     for (const t of this.scratch.values()) t.dispose();
     this.brightPass.dispose();

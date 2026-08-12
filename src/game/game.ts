@@ -7,6 +7,7 @@ import { MetroLine } from '../world/metro-line';
 import { Storefront, makeFinishGantry } from '../world/storefront';
 import { Sky, makeLights, SUN_DIR } from '../render/sky';
 import { PostPipeline } from '../render/pipeline';
+import { createShadowSystem, type ShadowSystem } from '../render/shadows';
 import { Car, MAX_SPEED } from './car';
 import { Traffic, type TrafficEvents } from './traffic';
 import { makeRig, type CameraRig } from './cameras';
@@ -57,6 +58,7 @@ export class Game {
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(64, 1, 0.4, 4200);
   private post: PostPipeline;
+  private shadows: ShadowSystem;
   private sky = new Sky();
   private input: Input;
 
@@ -129,6 +131,24 @@ export class Game {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.NoToneMapping;
     this.post = new PostPipeline(this.renderer);
+
+    // Shadow map. 2048 is the default because the sun sits at 4.9 degrees:
+    // shadows are ~12x the height of their caster, so the map is carrying long
+    // thin shapes and halving the resolution is immediately visible on the
+    // car's own shadow. `?shadow=1024` (or 0, to disable) overrides it.
+    const q = typeof location !== 'undefined' ? new URLSearchParams(location.search) : null;
+    const shadowPx = Number(q?.get('shadow') ?? 2048);
+    this.shadows = createShadowSystem({
+      size: shadowPx > 0 ? shadowPx : 1024,
+      range: 130,
+      casterHeight: 55,
+    });
+    if (shadowPx === 0) this.shadows.strength = 0;
+    this.post.shadows = this.shadows;
+    if (q?.has('noao')) this.post.settings.ao = 0;
+    if (q?.has('viewao')) this.post.debugView = 1;
+    else if (q?.has('viewshadow')) this.post.debugView = 2;
+
     this.rig = makeRig(this.cameraMode);
     this.input = new Input(canvas);
 
@@ -443,7 +463,12 @@ export class Game {
       // Scene pass only — see PostPipeline.sceneStats.
       drawCalls: this.post.sceneStats.drawCalls,
       triangles: this.post.sceneStats.triangles,
-      postPasses: 2 + (this.post.bloomLevels - 1) * 2,
+      postPasses: this.post.passCount,
+      // Depth-only caster pass into the shadow map, measured not estimated.
+      shadowDrawCalls: this.shadows.stats.drawCalls,
+      shadowTriangles: this.shadows.stats.triangles,
+      shadowCasters: this.shadows.stats.casters,
+      shadowSize: this.shadows.size,
       programs: i.programs?.length ?? 0,
       geometries: i.memory.geometries,
       textures: i.memory.textures,
@@ -598,6 +623,11 @@ export class Game {
     this.post.flash = Math.max(0, this.post.flash - dt * 2.4);
     this.post.settings.bloom = 1.10 + speed01 * 0.30;
     this.post.settings.exposure = 0.78 + (this.input.state.boost ? 0.05 : 0);
+
+    // Caster pass first: the composite reads the map the same frame, and
+    // renderer.info is snapshotted inside post.render() AFTER this, so the
+    // scene stats stay honest.
+    this.shadows.update(this.renderer, this.scene, this.camera);
     this.post.render(this.scene, this.camera, this.clock);
 
     // Audio follows the sim.
@@ -624,6 +654,7 @@ export class Game {
     window.removeEventListener('resize', this.resize);
     window.removeEventListener('orientationchange', this.resize);
     this.input.dispose();
+    this.shadows.dispose();
     this.post.dispose();
     this.renderer.dispose();
   }
