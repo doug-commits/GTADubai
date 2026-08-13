@@ -5,6 +5,7 @@ import { Road, Barriers } from '../world/road';
 import { City, Landmarks } from '../world/city';
 import { Desert } from '../world/desert';
 import { MetroLine } from '../world/metro-line';
+import { Interchanges } from '../world/interchange';
 import { Storefront, makeFinishGantry } from '../world/storefront';
 import { Sky, makeLights, SUN_DIR } from '../render/sky';
 import { PostPipeline } from '../render/pipeline';
@@ -92,6 +93,7 @@ export class Game {
   private desert!: Desert;
   private landmarks!: Landmarks;
   private metroLine!: MetroLine;
+  private interchanges!: Interchanges;
   private storefront!: Storefront;
   private car = new Car();
   private cockpit = new Cockpit();
@@ -229,6 +231,12 @@ export class Game {
     this.scene.add(this.landmarks.group);
     // Metro viaduct, stations, palms, light masts and bilingual gantries.
     // Replaces the generic poles/gantries that Furniture used to supply.
+    this.interchanges = new Interchanges(this.corridor, {
+      fromS: this.startS - 400,
+      toS: this.corridor.finishS + 250,
+    });
+    this.scene.add(this.interchanges.group);
+
     this.metroLine = new MetroLine(this.corridor, {
       fromS: this.startS - 400,
       toS: this.corridor.finishS + 250,
@@ -682,6 +690,7 @@ export class Game {
     this.city.update(this.clock, this.camera.position);
     this.landmarks.update(this.clock, this.camera.position);
     this.metroLine.update(this.clock, this.camera.position);
+    this.interchanges.update(this.camera.position);
     this.storefront.update(this.clock);
     this.traffic.setCameraUniforms(this.camera.position, this.clock);
     this.car.setCameraUniforms(this.camera.position, this.clock);
