@@ -225,10 +225,15 @@ export class ChaseRig implements CameraRig {
     // Engine vibration: tiny, speed-scaled, high frequency. Removing this makes
     // the whole shot feel like a flythrough instead of a car.
     const t = performance.now() * 0.001 + this.shakeSeed;
-    const amp = 0.012 + speed01 * 0.030 + car.slip * 0.05;
-    camera.rotation.x += Math.sin(t * 47.3) * amp * 0.4;
-    camera.rotation.z += Math.sin(t * 39.1) * amp * 0.5 - car.roll * 0.35;
-    camera.rotation.y += Math.sin(t * 53.7) * amp * 0.25;
+    // Engine vibration, NOT an earthquake. This was 0.042 rad (~2.4 degrees)
+    // oscillating at 47 Hz — seven times the amplitude the cockpit rig uses,
+    // which reads as the camera shaking loose rather than as a car at speed.
+    // Matched to FPV and slowed: high-frequency rotation on a chase camera is
+    // uniquely unpleasant because the whole scene swings, not just the view.
+    const amp = 0.0018 + speed01 * 0.0046 + car.slip * 0.012;
+    camera.rotation.x += Math.sin(t * 12.7) * amp * 0.5;
+    camera.rotation.z += Math.sin(t * 9.3) * amp * 0.6 - car.roll * 0.35;
+    camera.rotation.y += Math.sin(t * 14.9) * amp * 0.3;
 
     camera.fov = 62 + speed01 * 22;
     camera.near = 0.4;

@@ -49,6 +49,10 @@ interface Vehicle {
   w: number;
   h: number;
   d: number;
+  /** Per-instance scale jitter, so repeats of one model differ. */
+  jw: number;
+  jh: number;
+  jd: number;
 }
 
 const KIND_SPEC: Record<
@@ -72,11 +76,27 @@ const KIND_SPEC: Record<
  * European car park, and one more reason the corridor read as somewhere else.
  * Weighted by repeats rather than by a parallel weights array.
  */
+/**
+ * Body colours.
+ *
+ * Dubai traffic really is dominated by white, and an earlier pass weighted the
+ * palette 77% white/silver on those grounds. It was accurate and it was wrong:
+ * seen at distance through the dust haze, every car resolved to the same pale
+ * blob and the road read as one repeated vehicle. Truth about the fleet is not
+ * the same as legibility at 250 km/h.
+ *
+ * White still leads — it would look wrong otherwise — but there is now enough
+ * chroma in the mix that consecutive cars are tellable apart.
+ */
 const PALETTE = [
-  0xe9e7e2, 0xe9e7e2, 0xe9e7e2, 0xf2f1ee, 0xf2f1ee, // white, the default
-  0xc8c9c6, 0xc8c9c6, 0xb0b3b5,                     // silver
-  0xd9cfba, 0xc9b99c,                               // champagne / desert beige
-  0x2b2f36, 0x101216, 0x1e2a3a,                     // the few dark ones
+  0xe9e7e2, 0xe9e7e2, 0xf2f1ee,   // white, still the most common
+  0xc8c9c6, 0xb0b3b5,             // silver
+  0xd9cfba, 0xc9b99c,             // champagne / desert beige
+  0x2b2f36, 0x101216,             // graphite / near-black
+  0x1e2a3a, 0x27435e,             // navy, steel blue
+  0x6d1f22, 0x8c3a1e,             // maroon, burnt orange
+  0x1f4034, 0x545b62,             // racing green, gunmetal
+  0xa8a29a, 0x7a2f38,             // stone, deep red
 ];
 
 /** Roof colour, when a vehicle is two-tone. Dubai taxis are cream + red roof. */
@@ -223,6 +243,9 @@ export class Traffic {
         w: 1.9,
         h: 0.8,
         d: 4.5,
+        jw: 1,
+        jh: 1,
+        jd: 1,
       });
     }
   }
@@ -380,6 +403,9 @@ export class Traffic {
     v.w = size.w;
     v.h = size.h;
     v.d = size.d;
+    v.jw = rnd(0.95, 1.06);
+    v.jh = rnd(0.94, 1.08);
+    v.jd = rnd(0.94, 1.09);
     v.scored = false;
     v.laneCooldown = rnd(2, 9);
     // Left lanes run faster, exactly as they do on the real road.
@@ -417,7 +443,7 @@ export class Traffic {
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const up = new THREE.Vector3(0, 1, 0);
-    const ONE = new THREE.Vector3(1, 1, 1);
+    const _jit = new THREE.Vector3(1, 1, 1);
     const pos = new THREE.Vector3();
     const scl = new THREE.Vector3();
     const kindCount = [0, 0, 0, 0, 0];
@@ -481,7 +507,10 @@ export class Traffic {
           v.scored = true;
         }
       } else if (ds < -halfLen - 6) {
-        v.scored = false;
+        v.jw = rnd(0.95, 1.06);
+    v.jh = rnd(0.94, 1.08);
+    v.jd = rnd(0.94, 1.09);
+    v.scored = false;
       }
 
       // --- render ----------------------------------------------------------
@@ -490,11 +519,14 @@ export class Traffic {
       const z = p.z + p.nz * v.t;
       q.setFromAxisAngle(up, p.heading);
 
-      // Geometry is already built at real size, so no scaling — just place it.
+      // Geometry is built at real size, but a per-vehicle jitter stops two
+      // instances of the same kind from being visibly the same object. A few
+      // percent is enough — it is silhouette variation, not a funhouse.
       const km = this.kindMeshes[v.kind];
       const ki = kindCount[v.kind]++;
       pos.set(x, 0, z);
-      m.compose(pos, q, ONE);
+      _jit.set(v.jw, v.jh, v.jd);
+      m.compose(pos, q, _jit);
       km.setMatrixAt(ki, m);
       (km.geometry.getAttribute('aColor') as THREE.InstancedBufferAttribute)
         .setXYZ(ki, v.colour.r, v.colour.g, v.colour.b);

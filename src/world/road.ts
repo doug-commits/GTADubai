@@ -30,6 +30,11 @@ const VERGE = 14.0;
  * All distances are metres from the centreline.
  */
 export const STRIP_INNER = ROAD_HALF_WIDTH + SHOULDER;   // barrier line
+/**
+ * Road-facing surface of the concrete barrier. The car's lateral clamp is
+ * derived from this so the wall and the stop can never disagree.
+ */
+export const BARRIER_FACE = STRIP_INNER - 0.26;
 export const STRIP_W = 12.0;                             // planted median strip
 export const SERVICE_INNER = STRIP_INNER + STRIP_W;
 export const SERVICE_LANES = 3;

@@ -4,6 +4,7 @@ import { buildPlayerCar } from './models/vehicles';
 import { SKY_GLSL } from '../render/sky';
 import { PBR_GLSL, SKY_IBL_GLSL } from '../render/pbr';
 import { ROAD_HALF_WIDTH } from '../world/corridor';
+import { BARRIER_FACE } from '../world/road';
 import type { CenterlinePath, PathSample } from '../world/path';
 
 /**
@@ -18,7 +19,20 @@ import type { CenterlinePath, PathSample } from '../world/path';
 
 export const MAX_SPEED = 76; // m/s ≈ 274 km/h
 export const BOOST_SPEED = 98; // m/s ≈ 353 km/h
-const LIMIT = ROAD_HALF_WIDTH + 1.4;
+/**
+ * Lateral stop, metres from the centreline.
+ *
+ * Derived from the barrier's actual inner face rather than guessed, so the two
+ * can never drift apart: this was a hand-tuned constant, and once the
+ * carriageway was widened it no longer lined up with where the wall was
+ * drawn — the car stopped short of some stretches and pushed into others,
+ * which reads as driving through the wall.
+ *
+ * Half the car's body is subtracted so the SHELL stops at the concrete, not
+ * the centreline.
+ */
+const HALF_CAR_W = 0.95;
+const LIMIT = BARRIER_FACE - HALF_CAR_W;
 
 /** Shared object-space vertex shader for every part of the car. */
 const CAR_VERT = /* glsl */ `
