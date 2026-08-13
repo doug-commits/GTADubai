@@ -19,20 +19,40 @@ import { LANE_WIDTH, ROAD_HALF_WIDTH } from './corridor';
 
 const SHOULDER = 2.6;
 const VERGE = 14.0;
+
+/**
+ * Sheikh Zayed Road is not one carriageway, it is three per side: the
+ * express lanes, a planted strip, then a service road running parallel with
+ * its own traffic and its own kerbs. That layering is a large part of the
+ * corridor's apparent width in reference photography, and modelling only the
+ * express lanes is why the road stopped dead at the barrier.
+ *
+ * All distances are metres from the centreline.
+ */
+export const STRIP_INNER = ROAD_HALF_WIDTH + SHOULDER;   // barrier line
+export const STRIP_W = 12.0;                             // planted median strip
+export const SERVICE_INNER = STRIP_INNER + STRIP_W;
+export const SERVICE_LANES = 3;
+export const SERVICE_W = SERVICE_LANES * LANE_WIDTH;
+export const SERVICE_OUTER = SERVICE_INNER + SERVICE_W;
 /** Lateral sample positions, metres from centre. */
 function lateralDivisions(): number[] {
   const hw = ROAD_HALF_WIDTH;
-  return [
-    -hw - SHOULDER - VERGE,
-    -hw - SHOULDER,
-    -hw,
-    -hw * 0.5,
-    0,
-    hw * 0.5,
-    hw,
-    hw + SHOULDER,
-    hw + SHOULDER + VERGE,
-  ];
+  const out: number[] = [];
+  for (const sgn of [-1, 1]) {
+    out.push(
+      sgn * (SERVICE_OUTER + VERGE),
+      sgn * SERVICE_OUTER,
+      sgn * (SERVICE_INNER + SERVICE_W * 0.5),
+      sgn * SERVICE_INNER,
+      sgn * (STRIP_INNER + STRIP_W * 0.5),
+      sgn * STRIP_INNER,
+      sgn * hw,
+      sgn * hw * 0.5,
+    );
+  }
+  out.push(0);
+  return [...new Set(out)].sort((a, b) => a - b);
 }
 
 const ROAD_VERT = /* glsl */ `
@@ -75,6 +95,9 @@ const ROAD_FRAG = /* glsl */ `
   uniform float uFogNear;
   uniform float uFogFar;
   uniform float uDebug;
+  uniform float uStripInner;
+  uniform float uServiceInner;
+  uniform float uServiceOuter;
 
   ${SKY_GLSL}
 
@@ -126,7 +149,7 @@ const ROAD_FRAG = /* glsl */ `
     vec3 asphalt = mix(vec3(0.016, 0.015, 0.017), vec3(0.040, 0.037, 0.035), grain * 0.75 + patchwork * 0.45);
 
     // Darker polished wheel tracks where traffic has worn the surface.
-    float laneLocal = mod(lat + uHalfWidth, uLaneWidth) / uLaneWidth;
+    float laneLocal = mod(lat + uHalfWidth, uLaneWidth) / uLaneWidth;  // express frame; service reuses it harmlessly
     float wear = exp(-pow((laneLocal - 0.28) * 6.0, 2.0)) + exp(-pow((laneLocal - 0.72) * 6.0, 2.0));
     asphalt *= 1.0 - wear * 0.22;
 
@@ -134,20 +157,39 @@ const ROAD_FRAG = /* glsl */ `
       asphalt = mix(asphalt, texture(tAlbedo, vec2(lat, along) * 0.25).rgb * 0.35, 0.75);
     }
 
-    // Sandy verge either side of the shoulder.
     // Irrigated turf. Sheikh Zayed Road is planted and watered its whole
     // length — mown grass, low hedging and palm beds run right up to the hard
     // shoulder. Sand-coloured verges read as desert highway, not as this road.
     vec3 verge = mix(vec3(0.048, 0.092, 0.038), vec3(0.086, 0.148, 0.058), fbm(vec2(lat, along) * 0.35));
     verge = mix(verge, vec3(0.135, 0.118, 0.082), smoothstep(0.55, 0.95, fbm(vec2(lat * 0.4, along * 0.06))));
+
+    // --- which carriageway is this pixel on? --------------------------------
+    // The corridor is three surfaces per side: express lanes, a planted strip,
+    // then a service road. Each needs its own markings, so the marking maths
+    // below runs against a LOCAL lane frame rather than the centreline.
+    float inStrip   = step(uStripInner, absLat) * step(absLat, uServiceInner);
+    float inService = step(uServiceInner, absLat) * step(absLat, uServiceOuter);
+    float serviceHalf = (uServiceOuter - uServiceInner) * 0.5;
+    float serviceMid  = uServiceInner + serviceHalf;
+    // Lane frame: centreline for the express road, the service road's own
+    // centre for the service road.
+    float laneLat  = mix(lat, (absLat - serviceMid) * sign(lat), inService);
+    float laneHalf = mix(uHalfWidth, serviceHalf, inService);
+
+    // Planted strip between the two carriageways: grass with low hedging.
+    vec3 strip = mix(vec3(0.052, 0.104, 0.040), vec3(0.094, 0.162, 0.062), fbm(vec2(lat * 1.4, along * 0.7)));
+    float hedge = smoothstep(0.45, 0.62, fbm(vec2(lat * 0.9, along * 0.22)));
+    strip = mix(strip, vec3(0.036, 0.078, 0.030), hedge * 0.7);
+
     vec3 base = mix(asphalt, verge, vEdge);
+    base = mix(base, strip, inStrip);
 
     // ---------------------------------------------------------------- wetness
     // Computed before the markings are laid down: wet tarmac is much darker
     // than dry, but the paint on top of it is not, and applying one darkening
     // pass over both was washing the lane lines out to nothing.
     float puddle = smoothstep(0.42, 0.78, fbm(vec2(lat * 0.22, along * 0.035)));
-    puddle = clamp(puddle + wear * 0.30, 0.0, 1.0) * (1.0 - vEdge);
+    puddle = clamp(puddle + wear * 0.30, 0.0, 1.0) * (1.0 - vEdge) * (1.0 - inStrip);
     float wet = clamp(uWetness * (0.42 + puddle * 0.68), 0.0, 1.0);
     if (uHasRough > 0.5) {
       wet *= 1.0 - texture(tRough, vec2(lat, along) * 0.25).r * 0.5;
@@ -175,19 +217,20 @@ const ROAD_FRAG = /* glsl */ `
     float stripeFade = 1.0 - smoothstep(0.05, 0.35, latW);
 
     float md = 1e9;
-    for (int i = 1; i < 5; i++) {
-      float x = -uHalfWidth + float(i) * uLaneWidth;
-      md = min(md, abs(lat - x));
+    for (int i = 1; i < 7; i++) {
+      float x = -laneHalf + float(i) * uLaneWidth;
+      if (x >= laneHalf - 0.05) break;
+      md = min(md, abs(laneLat - x));
     }
     // Widen the analytic edge with the pixel footprint: a sub-pixel line must
     // get dimmer, not thinner, or it shimmers.
     float lanePaint = (1.0 - smoothstep(0.055, 0.115 + latW, md)) * dash;
     lanePaint = mix(lanePaint * 0.30, lanePaint, stripeFade);
 
-    float edgePaint = 1.0 - smoothstep(0.07, 0.14 + latW, abs(absLat - uHalfWidth + 0.25));
+    float edgePaint = 1.0 - smoothstep(0.07, 0.14 + latW, abs(abs(laneLat) - laneHalf + 0.25));
     edgePaint = mix(edgePaint * 0.45, edgePaint, stripeFade);
 
-    float paint = clamp(lanePaint + edgePaint, 0.0, 1.0) * (1.0 - vEdge);
+    float paint = clamp(lanePaint + edgePaint, 0.0, 1.0) * (1.0 - vEdge) * (1.0 - inStrip);
     // Paint is worn, not pristine white — but it is the brightest thing on the
     // carriageway by a wide margin, and the dashes streaking toward the camera
     // are the main thing selling speed on the ground plane.
@@ -279,12 +322,25 @@ export class Road {
         positions[vi++] = sample.x + sample.nx * t;
         // Crown the carriageway ~1.5% and drop the verge away, so the surface
         // catches light differently across the width.
-        const onRoad = Math.abs(t) <= ROAD_HALF_WIDTH + SHOULDER;
-        positions[vi++] = onRoad ? -Math.abs(t) * 0.015 : -ROAD_HALF_WIDTH * 0.015 - 0.55;
+        const at = Math.abs(t);
+        let y: number;
+        if (at <= STRIP_INNER) {
+          y = -at * 0.015; // crowned express carriageway
+        } else if (at < SERVICE_INNER) {
+          // Planted strip sits proud of both carriageways behind a kerb.
+          y = -STRIP_INNER * 0.015 + 0.22;
+        } else if (at <= SERVICE_OUTER) {
+          // Service road, crowned about its own centreline and a touch lower.
+          const local = at - (SERVICE_INNER + SERVICE_W * 0.5);
+          y = -STRIP_INNER * 0.015 - 0.14 - Math.abs(local) * 0.015;
+        } else {
+          y = -STRIP_INNER * 0.015 - 0.55;
+        }
+        positions[vi++] = y;
         positions[vi++] = sample.z + sample.nz * t;
         uvs[ui++] = t;
         uvs[ui++] = s;
-        edges[ei++] = Math.abs(t) > ROAD_HALF_WIDTH + SHOULDER ? 1 : 0;
+        edges[ei++] = Math.abs(t) > SERVICE_OUTER ? 1 : 0;
       }
     }
 
@@ -331,6 +387,9 @@ export class Road {
         uHasRough: { value: 0 },
         uFogNear: { value: opts.fogNear ?? 260 },
         uFogFar: { value: opts.fogFar ?? 1150 },
+        uStripInner: { value: STRIP_INNER },
+        uServiceInner: { value: SERVICE_INNER },
+        uServiceOuter: { value: SERVICE_OUTER },
         uDebug: {
           value:
             typeof location !== 'undefined' &&
